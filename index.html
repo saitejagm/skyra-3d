@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rajapushpa Skyra 3D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* VOICE: calm and architectural; a buyer's own model of the whole project
+   IDEA: the builder's sales-gallery model, but every wall taken from the sanctioned drawings
+   PICTURE: full-screen 3D site; pick a tower, cut it open at any floor, walk any flat
+   COLOUR and TYPE: night slate glass panels, marble white, one brass accent #d6a756; Manrope + Figtree
+   LAYOUT: model fills screen; placard top-left, modes top-centre, selector right, plan bottom-left */
+:root{color-scheme:dark;--glass:rgba(13,16,21,.82);--line:rgba(255,255,255,.10);--ink:#ece8e1;--mute:#a7a39b;--brass:#d6a756;--brass2:#f0cf8c}
+*{box-sizing:border-box;min-width:0}
+html,body{margin:0;height:100%;background:#0d1015;color:var(--ink);font:15px/1.5 Figtree,system-ui,sans-serif;overflow:hidden}
+#c{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:grab}
+#c.walk{cursor:crosshair}
+.g{background:var(--glass);border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+button{font-family:inherit}
+:focus-visible{outline:2px solid var(--brass2);outline-offset:2px}
+#card{position:fixed;left:16px;top:16px;padding:13px 16px 12px;width:350px}
+#card h1{font:800 20px/1.1 Manrope,sans-serif;margin:0 0 3px}
+#card p{margin:0;color:var(--mute);font-size:13.5px}
+#sel{font:700 15px Manrope,sans-serif;color:var(--brass2);margin-top:8px}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:8px}
+.stats div{border-top:1px solid var(--line);padding-top:5px}
+.stats b{display:block;font:700 14.5px Manrope,sans-serif;white-space:nowrap}
+.stats span{font-size:11.5px;color:var(--mute);line-height:1.2;display:block}
+#modes{position:fixed;left:50%;top:16px;transform:translateX(-50%);display:flex;padding:4px;gap:2px}
+#modes button{font:600 14px Figtree;color:var(--ink);background:transparent;border:0;border-radius:10px;padding:0 14px;height:40px;cursor:pointer;white-space:nowrap}
+#modes button[aria-pressed=true]{background:var(--brass);color:#16130d}
+#panel{position:fixed;right:16px;top:16px;bottom:16px;width:320px;display:flex;flex-direction:column;overflow:hidden}
+#panel .scroll{overflow-y:auto;padding:14px;flex:1}
+#panel h2{font:700 12.5px Manrope,sans-serif;color:var(--mute);margin:14px 0 6px}
+#panel h2:first-child{margin-top:0}
+.chips{display:flex;gap:6px}
+.chips button{flex:1;height:40px;border-radius:10px;border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--ink);font:600 14px Figtree;cursor:pointer}
+.chips button[aria-pressed=true]{background:rgba(214,167,86,.2);border-color:var(--brass);color:var(--brass2)}
+.floorrow{display:flex;align-items:center;gap:6px}
+.floorrow button{width:44px;height:40px;border-radius:10px;border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--ink);font-size:18px;cursor:pointer}
+.floorrow output{flex:1;text-align:center;font:800 22px Manrope}
+input[type=range]{width:100%;accent-color:var(--brass);height:28px}
+#fnote{font-size:12.5px;color:var(--brass2);min-height:0;margin:2px 0 0}
+#units{display:grid;gap:4px}
+#units button{display:grid;grid-template-columns:auto 1fr auto;gap:2px 10px;align-items:center;text-align:left;width:100%;background:rgba(255,255,255,.03);border:1px solid transparent;border-radius:10px;color:var(--ink);padding:7px 10px;cursor:pointer;min-height:44px}
+#units button:hover{background:rgba(255,255,255,.07)}
+#units button.on{border-color:var(--brass);background:rgba(214,167,86,.14)}
+#units b{font:800 15px Manrope}
+#units span{font-size:12.5px;color:var(--mute)}
+#units i{font-style:normal;font-size:12.5px;color:var(--brass2);white-space:nowrap}
+#find{display:flex;gap:6px;margin-top:10px}
+#find input{flex:1;height:40px;border-radius:10px;border:1px solid var(--line);background:rgba(255,255,255,.06);color:var(--ink);font:500 14.5px Figtree;padding:0 12px}
+#find input::placeholder{color:var(--mute)}
+#find button,#acts button{height:40px;border-radius:10px;border:1px solid var(--line);background:rgba(255,255,255,.07);color:var(--ink);font:600 14px Figtree;padding:0 14px;cursor:pointer}
+#find button{background:var(--brass);color:#16130d;border-color:var(--brass)}
+#ferr{font-size:12.5px;color:var(--brass2);margin:4px 0 0!important;min-height:0}
+#ferr:empty{display:none}
+#acts{display:flex;gap:6px;margin-top:10px}
+#acts button{flex:1;padding:0 8px;white-space:nowrap}
+#acts button[aria-pressed=true]{border-color:var(--brass);color:var(--brass2);background:rgba(214,167,86,.14)}
+#rooms{display:grid;gap:1px}
+#rooms button{display:flex;justify-content:space-between;gap:8px;width:100%;text-align:left;background:transparent;border:0;color:var(--ink);font:500 14px Figtree;padding:7px 9px;border-radius:9px;cursor:pointer;min-height:36px;align-items:center}
+#rooms button:hover{background:rgba(255,255,255,.06)}
+#rooms span{color:var(--mute);font-size:12.5px;white-space:nowrap}
+.row{display:flex;align-items:center;gap:10px;margin:4px 0}
+.row label{flex:1;font-size:14px}
+select{font:500 14px Figtree;background:#1b2028;color:var(--ink);border:1px solid var(--line);border-radius:8px;height:36px;padding:0 8px;width:100%}
+.chk{display:flex;align-items:center;gap:10px;min-height:34px;font-size:14px;cursor:pointer}
+.chk input{width:18px;height:18px;accent-color:var(--brass)}
+#sunread,#check{font-size:13px;color:var(--mute);margin:4px 0 0}
+#check b{color:var(--ink)}
+details{margin-top:14px;border-top:1px solid var(--line);padding-top:10px;font-size:13px;color:var(--mute)}
+summary{cursor:pointer;color:var(--ink);font-weight:600;min-height:30px}
+details p{margin:6px 0}
+#mm{position:fixed;left:16px;bottom:16px;padding:8px}
+#mm canvas{display:block;cursor:pointer}
+#mm small{display:block;font-size:11.5px;color:var(--mute);text-align:center;margin-top:2px}
+#hud{position:fixed;left:50%;top:70px;transform:translateX(-50%);padding:6px 14px;font:700 15px Manrope;display:none;white-space:nowrap}
+#hud span{font:500 13px Figtree;color:var(--mute);margin-left:8px}
+#cap{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);padding:10px 16px;display:none;max-width:min(560px,80vw);text-align:center}
+#pad{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);display:none;gap:6px;padding:6px;align-items:center}
+#pad button{width:48px;height:48px;border-radius:12px;background:rgba(255,255,255,.07);border:1px solid var(--line);color:var(--ink);font-size:18px;cursor:pointer;touch-action:none}
+#pad .hint{font-size:12.5px;color:var(--mute);padding:0 8px;max-width:220px;line-height:1.3}
+#tourbar{display:none;gap:6px;margin:8px 0 0}
+#tourbar button{flex:1;height:38px;border-radius:10px;border:1px solid var(--line);background:rgba(255,255,255,.07);color:var(--ink);font:600 14px Figtree;cursor:pointer}
+#labels{position:fixed;inset:0;pointer-events:none;overflow:hidden}
+.lb{position:absolute;transform:translate(-50%,-50%);text-align:center;white-space:nowrap;font:700 12px Manrope;color:#1d1a15;text-shadow:0 0 6px rgba(255,255,255,.95),0 0 2px #fff}
+.lb i{display:block;font:500 10.5px Figtree;font-style:normal;color:#4a443b}
+.lb.u{font-size:13px;color:#fff;text-shadow:0 1px 4px #000,0 0 2px #000;background:rgba(20,20,24,.55);padding:2px 8px;border-radius:8px}
+.lb.u i{color:#e6d6b8}
+.lb.t{font:800 15px Manrope;color:#fff;text-shadow:0 1px 6px #000}
+.lb.a{font:600 11.5px Figtree;color:#fff;text-shadow:0 1px 4px #000}
+.lb.lm{font:700 12px Manrope;color:#fff;text-shadow:0 1px 4px #000,0 0 2px #000;background:rgba(13,16,21,.45);padding:2px 8px;border-radius:8px}
+.lb.lm i{color:#e6d6b8;font-weight:500}
+#load{position:fixed;inset:0;display:grid;place-items:center;font:600 15px Figtree;color:var(--mute);background:#0d1015;z-index:9;text-align:center;padding:20px}
+#menu{display:none}
+@media(max-width:860px){
+ #panel{top:auto;bottom:0;right:0;left:0;width:auto;max-height:56vh;border-radius:14px 14px 0 0;transform:translateY(100%);transition:transform .25s;z-index:4}
+ #panel.open{transform:none}
+ #menu{display:block;position:fixed;right:12px;bottom:12px;height:44px;padding:0 16px;z-index:5;color:var(--ink);font:600 14px Figtree}
+ #modes{top:10px;left:12px;right:12px;transform:none;justify-content:space-between}
+ #modes button{padding:0 6px;font-size:13.5px;flex:1}
+ #card{left:12px;right:12px;top:62px;width:auto;padding:10px 12px}
+ #card h1{font-size:16px}#card>p{display:none}.stats{display:none}#sel{margin-top:2px;font-size:14px}#find{margin-top:6px}#acts{margin-top:6px}#acts button{height:36px;font-size:13px}
+ #mm{left:12px;bottom:12px;padding:5px}#mm small{display:none}
+ #hud{top:130px}
+ #pad{left:auto;right:12px;bottom:66px;transform:none}#pad .hint{display:none}
+ #cap{bottom:140px;max-width:calc(100vw - 24px)}
+}
+@media(prefers-reduced-motion:reduce){#panel{transition:none}}
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="3D model of Rajapushpa Skyra"></canvas>
+<div id="labels"></div>
+<div id="load">Loading the approved plans…</div>
+
+<div id="modes" class="g" role="group" aria-label="View">
+ <button data-m="site" aria-pressed="true">Site</button>
+ <button data-m="floor" aria-pressed="false">Floor</button>
+ <button data-m="walk" aria-pressed="false">Walk</button>
+ <button data-m="tour" aria-pressed="false">Tour</button>
+</div>
+
+<section id="card" class="g">
+ <h1>Rajapushpa Skyra</h1>
+ <p>Plot 7, Neopolis, Kokapet · 3 towers · stilt + 56 floors</p>
+ <form id="find" role="search" autocomplete="off"><input id="fq" aria-label="Flat number, for example B-2904" placeholder="Find a flat · e.g. B-2904 or Aura 1203"><button type="submit">Go</button></form>
+ <p id="ferr" role="status"></p>
+ <div id="sel"></div>
+ <div class="stats" id="stats"></div>
+ <div id="acts"><button data-m="walk">Walk in</button><button data-m="tour">Guided tour</button><button id="share" type="button">Copy link</button></div>
+</section>
+
+<button id="menu" class="g" aria-expanded="false" aria-controls="panel">Towers &amp; flats</button>
+
+<aside id="panel" class="g" aria-label="Choose a tower, floor and flat">
+ <div class="scroll">
+  <h2>Tower</h2>
+  <div class="chips" id="towers"></div>
+  <h2>Floor</h2>
+  <div class="floorrow"><button id="fdn" aria-label="Floor down">−</button><output id="fval">29</output><button id="fup" aria-label="Floor up">+</button></div>
+  <input type="range" id="frange" min="1" max="56" value="29" aria-label="Floor">
+  <p id="fnote"></p>
+  <h2>Flats on this floor</h2>
+  <div id="units"></div>
+  <div id="tourbar"><button id="tplay">Pause</button><button id="trestart">Restart</button></div>
+  <h2 id="roomsh">Rooms</h2>
+  <div id="rooms"></div>
+  <p id="check"></p>
+  <h2>Sunlight</h2>
+  <div class="row"><label for="tod">Time of day</label><b id="todv" style="font:700 14px Manrope">16:00</b></div>
+  <input id="tod" type="range" min="6" max="18.75" step="0.25" value="16">
+  <select id="season" aria-label="Season">
+   <option value="-21">Late November (now)</option>
+   <option value="-23.4">21 December, lowest sun</option>
+   <option value="0">March or September equinox</option>
+   <option value="23.4">21 June, highest sun</option>
+  </select>
+  <p id="sunread"></p>
+  <h2>Show</h2>
+  <label class="chk"><input type="checkbox" id="furn" checked> Furniture (illustrative)</label>
+  <label class="chk"><input type="checkbox" id="lbl" checked> Labels</label>
+  <label class="chk"><input type="checkbox" id="city" checked> Surroundings (OpenStreetMap)</label>
+  <details>
+   <summary>Where this comes from</summary>
+   <p>Every wall, door, window, balcony, lift and staircase is read from the vector drawings in the sanctioned building plan (RERA documents, file TS/069953/2024, dated 16-01-2025). Sheet 4 covers Aura, sheet 6 Bella and sheet 8 Clara, each drawn at 1:100. Floors 15, 24, 33, 42, 51 and the other special floors use their own drawings, so refuge areas sit where the approval puts them.</p>
+   <p>Tower, clubhouse and site-boundary positions come from the 1:200 site plan. Floor levels come from the approved sections: stilt at +0.60 m, 1st floor at +9.10 m, then 3.35 m per floor up to the terrace at +196.70 m.</p>
+   <p>Flat numbers, facing and saleable sizes come from the sales brochure. The courts, lawns and play areas are placed from the brochure master plan, to within about 1.5 m.</p>
+   <p>The surroundings come from OpenStreetMap (© OpenStreetMap contributors, ODbL): the Outer Ring Road and its service roads, the Neopolis roads, Osman Sagar and Kokapet Lake, parks, and about 7,800 mapped buildings within 4.5 km. They are aligned to the site using the 36 m road on the west, the road on the north and Plot 8 on the east, so expect them to be within roughly 20–30 m. Where OpenStreetMap gives no height, a building's height is estimated from its size. Neighbouring high-rises still under construction (Brigade Gateway, My Home Nishada, Sattva Lakeridge, Prestige Clairemont, Casa Luxura, One by MSN, My Home Grava and My Home Apas) are drawn at their published tower count and floors, laid out approximately inside their mapped plots.</p>
+   <p>The selected flat is furnished in an Indian modern style with CC0 3D models and photo textures from Poly Haven: marble, teak, walnut, linen and velvet, plus brass, jaali, a jhoola and dhurrie rugs. Pieces are placed against the approved walls, clear of doors and windows. The furniture is illustrative, and other flats on the floor show simple blocks to keep the model fast.</p>
+  </details>
+ </div>
+</aside>
+
+<div id="mm" class="g"><canvas id="mmc" width="210" height="210" aria-label="Plan of the selected floor. Click to stand there."></canvas><small>Click the plan to stand there</small></div>
+<div id="hud" class="g"></div>
+<div id="cap" class="g"></div>
+<div id="pad" class="g">
+ <button data-k="tl" aria-label="Turn left">⟲</button>
+ <button data-k="f" aria-label="Walk forward">▲</button>
+ <button data-k="b" aria-label="Walk back">▼</button>
+ <button data-k="tr" aria-label="Turn right">⟳</button>
+ <span class="hint">Drag to look. WASD or the arrow keys to walk. Shift to go faster.</span>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="app.js?v=share1"></script>
+</body>
+</html>
