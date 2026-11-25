@@ -184,7 +184,7 @@ async function loadSurroundings() {
 let SUR_READY = false;
 // solid blocks that can hide a landmark label: the three towers here plus the neighbouring towers
 const occBoxes = [];
-function addLandmark(n, sub, p) { const d = document.createElement('div'); d.className = 'lb lm'; d.innerHTML = `${n}${sub ? `<i>${sub}</i>` : ''}`; LBL.appendChild(d); landmarks.push({ d, p }); }
+function addLandmark(n, sub, p) { const d = document.createElement('div'); d.className = 'lb lm'; d.style.display = 'none'; d.innerHTML = `${n}${sub ? `<i>${sub}</i>` : ''}`; LBL.appendChild(d); landmarks.push({ d, p, occ: true }); }
 
 /* ================= towers (massing) ================= */
 const towerGrp = {};
@@ -359,8 +359,19 @@ function edgesOf(q, v, wins) {
   e.dsw = [];  // shuttered doors in this wall (open arches have no leaf to swing)
   v.doors.forEach((d, di) => { const perpLo = e.hz ? d[1] : d[0], perpHi = e.hz ? d[3] : d[2]; const lo = Math.max(e.a, e.hz ? d[0] : d[1]), hi = Math.min(e.b, e.hz ? d[2] : d[3]); if (perpLo - .35 <= e.c && e.c <= perpHi + .35 && hi - lo > .2) { e.blk.push([lo - .25, hi + .25]); if (v.dk[di] !== 'OPEN') e.dsw.push([lo, hi]); } });
   wins.forEach(w => { if (w.hz !== !!e.hz || e.c < w.c0 - .1 || e.c > w.c1 + .1) return; const lo = Math.max(e.a, w.a), hi = Math.min(e.b, w.b); if (hi - lo > .2) { if (w.k === 'SD') { e.blk.push([lo - .1, hi + .1]); (e.sd || (e.sd = [])).push([lo, hi]); } else e.win.push([lo - .1, hi + .1]); } });
+  // doorways in the other walls need standing room in front of them: keep the strip of this wall whose furniture
+  // (up to 1 m deep) would reach into any doorway's approach zone free as well
+  const band = e.hz ? [e.a, Math.min(e.c, e.c + e.n), e.b, Math.max(e.c, e.c + e.n)] : [Math.min(e.c, e.c + e.n), e.a, Math.max(e.c, e.c + e.n), e.b];
+  approachZones(v, wins).forEach(z => { if (z[0] < band[2] && band[0] < z[2] && z[1] < band[3] && band[1] < z[3]) { const lo = Math.max(e.a, e.hz ? z[0] : z[1]), hi = Math.min(e.b, e.hz ? z[2] : z[3]); if (hi > lo) e.blk.push([lo, hi]); } });
  });
  return E;
+}
+// the floor in front of every doorway, open arch and sliding door (both sides) where nothing may stand: opening width + 10 cm, 90 cm deep
+function approachZones(v, wins) {
+ if (v._az && v._azW === wins) return v._az; const z = [];
+ v.doors.forEach(q => { const hzW = (q[3] - q[1]) < (q[2] - q[0]), cx = (q[0] + q[2]) / 2, cz = (q[1] + q[3]) / 2; z.push(hzW ? [q[0] - .1, cz - .9, q[2] + .1, cz + .9] : [cx - .9, q[1] - .1, cx + .9, q[3] + .1]); });
+ wins.filter(w => w.k === 'SD').forEach(w => z.push(w.hz ? [w.a, w.c - .9, w.b, w.c + .9] : [w.c - .9, w.a, w.c + .9, w.b]));
+ v._azW = wins; return (v._az = z);
 }
 function freeSpan(e, avoidWin) {
  const bl = e.blk.concat(avoidWin ? e.win : []).sort((p, q) => p[0] - q[0]); let best = [0, 0], cur = e.a;
@@ -770,6 +781,7 @@ function buildHero() {
  U.rooms.forEach(r => { const n0 = HG.children.length; try { heroRoom(r, FLOOR.v, FLOOR.wins, U); } catch (e) { console.warn('room', r.label, e); } r.heroN = HG.children.length - n0; });
  FLOOR.BG.forEach((g, gi) => { const b = g.box; if (b[0] < U.box[2] + 2.5 && b[2] > U.box[0] - 2.5 && b[1] < U.box[3] + 2.5 && b[3] > U.box[1] - 2.5 && (g.doors.length || true)) { const near = U.rooms.some(r => Math.max(r.r[0] - b[2], b[0] - r.r[2], r.r[1] - b[3], b[1] - r.r[3]) < 1.2 && !r.staff); if (!near) return; if (FLOOR.furnU['b' + gi]) FLOOR.furnU['b' + gi].visible = false; try { heroBalcony(g); } catch (e) { console.warn('balcony', e); } } });
  sectionCaps(HG);
+ furnitureFootprints(HG);
  applyLights();
 }
 // the dollhouse view slices the flat at 1.35 m: anything taller (wardrobes, fridges, headboards) would show as an empty shell from above.
@@ -784,6 +796,34 @@ function sectionCaps(G) {
   const w = b.max.x - b.min.x, d = b.max.z - b.min.z; if (w < .005 || d < .005) return;
   const c = new T.Mesh(new T.PlaneGeometry(w, d).rotateX(-Math.PI / 2), CAP_M); c.position.set((b.min.x + b.max.x) / 2, (cut - o.position.y) / sy, (b.min.z + b.max.z) / 2); c.userData.cap = 1; o.add(c); caps.push(c); });
  applyCaps();
+}
+// every piece of furniture that stands on the floor is solid to the walker: its footprint (plan frame) is recorded here
+function furnitureFootprints(G) {
+ const out = FLOOR.furnRects = [], bb = new T.Box3(); FLOOR.grp.updateWorldMatrix(true, true); const O = FLOOR.grp.getWorldPosition(new T.Vector3());
+ G.children.forEach(o => { if (o.userData.cap) return; const ms = []; o.traverse(m => { if (m.isMesh) ms.push(...(Array.isArray(m.material) ? m.material : [m.material])); }); if (!ms.length || ms.every(m => m.transparent)) return;
+  bb.setFromObject(o); const y0 = bb.min.y - O.y, y1 = bb.max.y - O.y; if (y0 > .45 || y1 < .3) return;   // rugs, wall art, fans and lights don't block
+  const r = [bb.min.x - O.x + .03, bb.min.z - O.z + .03, bb.max.x - O.x - .03, bb.max.z - O.z - .03]; if (r[2] - r[0] < .04 || r[3] - r[1] < .04) return; r.o = o; out.push(r); });
+ // guarantee: no furniture stands in a doorway or the 60 cm in front of it (placement rules should already prevent this)
+ const U = FLOOR.units[sel.u], keep = U ? approachZones(FLOOR.v, FLOOR.wins).map(z => { const w = z[2] - z[0], h = z[3] - z[1]; return w > h ? [z[0] + .1, z[1] + .3, z[2] - .1, z[3] - .3] : [z[0] + .3, z[1] + .1, z[2] - .3, z[3] - .1]; }).filter(z => z[0] < U.box[2] + 1 && z[2] > U.box[0] - 1 && z[1] < U.box[3] + 1 && z[3] > U.box[1] - 1) : [];
+ FLOOR.furnRects = out.filter(r => { if (!keep.some(z => z[0] < r[2] && r[0] < z[2] && z[1] < r[3] && r[1] < z[3])) return true; G.remove(r.o); FLOOR.furnDropped = (FLOOR.furnDropped || 0) + 1; return false; });
+ if (U) ensureAccess(U, G);
+}
+// guarantee: from the front door a person can walk into every room and sit-out of the flat. If furniture walls something off,
+// the smallest pieces in the way are taken out (decor goes before beds, counters and wardrobes) until everything is reachable.
+function ensureAccess(U, G) {
+ const res = .15, R = .22, x0 = U.box[0] - 1.5, z0 = U.box[1] - 1.5, nx = Math.ceil((U.box[2] - U.box[0] + 3) / res), nz = Math.ceil((U.box[3] - U.box[1] + 3) / res), N = nx * nz;
+ const wall = new Uint8Array(N), occ = new Uint16Array(N), X = i => x0 + (i + .5) * res, Z = j => z0 + (j + .5) * res;
+ for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) wall[j * nx + i] = blocked(X(i), Z(j)) ? 1 : 0;
+ const cellsOf = q => { const c = []; for (let j = Math.max(0, Math.floor((q[1] - R - z0) / res)); j < Math.min(nz, Math.ceil((q[3] + R - z0) / res)); j++) for (let i = Math.max(0, Math.floor((q[0] - R - x0) / res)); i < Math.min(nx, Math.ceil((q[2] + R - x0) / res)); i++) { const dx = Math.max(q[0] - X(i), 0, X(i) - q[2]), dz = Math.max(q[1] - Z(j), 0, Z(j) - q[3]); if (dx * dx + dz * dz < R * R) c.push(j * nx + i); } return c; };
+ const mine = FLOOR.furnRects.filter(q => q[0] < U.box[2] + 1 && q[2] > U.box[0] - 1 && q[1] < U.box[3] + 1 && q[3] > U.box[1] - 1); mine.forEach(q => { q.cells = cellsOf(q); q.cells.forEach(k => occ[k]++); });
+ const targets = U.rooms.map(r => { const c = []; for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) if (!wall[j * nx + i] && inRoom(r, X(i), Z(j))) c.push(j * nx + i); return { r, c }; }).filter(t => t.c.length);
+ FLOOR.BG.forEach(g => { if (g.doors.length && g.box[0] < U.box[2] + 2 && g.box[2] > U.box[0] - 2 && g.box[1] < U.box[3] + 2 && g.box[3] > U.box[1] - 2) { const c = []; for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) if (!wall[j * nx + i] && g.rects.some(q => inRect(q, X(i), Z(j), 0))) c.push(j * nx + i); if (c.length) targets.push({ g, c }); } });
+ const starts = U.door ? [U.door.inside, U.door.outside].map(p => Math.floor((p[1] - z0) / res) * nx + Math.floor((p[0] - x0) / res)).filter(k => k >= 0 && k < N && !wall[k]) : [];
+ const reach = () => { const seen = new Uint8Array(N), q = starts.filter(k => !occ[k]); q.forEach(k => seen[k] = 1); while (q.length) { const k = q.pop(), i = k % nx, j = (k - i) / nx; for (const [a, b] of [[i + 1, j], [i - 1, j], [i, j + 1], [i, j - 1]]) { if (a < 0 || b < 0 || a >= nx || b >= nz) continue; const m = b * nx + a; if (seen[m] || wall[m] || occ[m]) continue; seen[m] = 1; q.push(m); } } return targets.filter(t => !t.c.some(k => seen[k])).length; };
+ if (!starts.length) return; let miss = reach(); if (!miss) return;
+ const cands = mine.slice().sort((p, q) => (p[2] - p[0]) * (p[3] - p[1]) - (q[2] - q[0]) * (q[3] - q[1]));
+ for (const q of cands) { if (!miss) break; q.cells.forEach(k => occ[k]--); const m2 = reach(); if (m2 < miss) { miss = m2; G.remove(q.o); FLOOR.furnRects.splice(FLOOR.furnRects.indexOf(q), 1); FLOOR.furnDropped = (FLOOR.furnDropped || 0) + 1; } else q.cells.forEach(k => occ[k]++); }
+ if (miss) console.warn('access', U.id, miss, 'areas still closed off');
 }
 function applyCaps() { const inside = mode === 'walk' || mode === 'tour'; ((FLOOR && FLOOR.hero && FLOOR.hero.userData.caps) || []).forEach(c => c.visible = !inside); }
 function applyLights() { const inside = mode === 'walk' || mode === 'tour'; lights.forEach(l => l.visible = inside); }
@@ -836,7 +876,14 @@ function placeLabels() {
  const lmOn = show && city.visible && mode !== 'floor'; landmarks.forEach(l => put(l, lmOn, [0, 0, 0]));
  // hide landmarks behind a tower (checked a few times a second; the tower you stand in doesn't count)
  if (lmOn && (occTick = (occTick + 1) % 12) === 0) { const ray = new T.Ray(), hit = new T.Vector3(), here = cam.position;
-  const own = TOWER_BOXES.concat(occBoxes); landmarks.forEach(l => { const tgt = new T.Vector3(...l.p), dist = here.distanceTo(tgt); ray.set(here, tgt.clone().sub(here).normalize()); l.occ = own.some(bx => !bx.containsPoint(here) && ray.intersectBox(bx, hit) && here.distanceTo(hit) < dist - 8); }); }
+  const own = TOWER_BOXES.concat(occBoxes); const inside = mode === 'walk' || mode === 'tour';
+  // indoors, the flat's own walls, ceiling, floor and furniture hide what they would hide (glass doesn't)
+  if (inside && FLOOR && FLOOR.occFor !== FLOOR.heroFor + '|' + (FLOOR.hero ? FLOOR.hero.children.length : 0)) { FLOOR.occFor = FLOOR.heroFor + '|' + (FLOOR.hero ? FLOOR.hero.children.length : 0); FLOOR.occ = []; FLOOR.grp.traverse(o => { if (!o.isMesh || o.userData.cap) return; const m = Array.isArray(o.material) ? o.material[0] : o.material; if (!m.transparent && m.visible !== false) FLOOR.occ.push(o); }); }
+  const rc = new T.Raycaster(); landmarks.forEach(l => { const tgt = new T.Vector3(...l.p), dist = here.distanceTo(tgt), dir = tgt.clone().sub(here).normalize(); ray.set(here, dir);
+   l.occ = own.some(bx => !bx.containsPoint(here) && ray.intersectBox(bx, hit) && here.distanceTo(hit) < dist - 8);
+   // the slab above (ceiling) and below (floor) of this storey cover the whole floor plate and its balconies
+   if (!l.occ && inside && FLOOR) { const y0 = FLOOR.grp.position.y, yy = dir.y > 0 ? y0 + CH : y0; if (Math.abs(dir.y) > 1e-4) { const t = (yy - here.y) / dir.y; if (t > 0 && t < dist) { const px = here.x + dir.x * t - FLOOR.grp.position.x, pz = here.z + dir.z * t - FLOOR.grp.position.z; if (pip(FLOOR.v.plate, px, pz) || FLOOR.v.balc.some(b => inRect(b, px, pz, .05))) l.occ = true; } } }
+   if (!l.occ && inside && FLOOR) { rc.set(here, dir); rc.far = Math.min(dist - 1, 120); l.occ = rc.intersectObjects(FLOOR.occ.filter(o => { for (let p = o; p; p = p.parent) if (!p.visible) return false; return true; }), false).length > 0; } }); }
  landmarks.forEach(l => { if (l.occ && lmOn) l.d.style.display = 'none'; });
  // keep the nearest landmark when two would overlap
  if (lmOn) { const placed = []; landmarks.filter(l => l.d.style.display === 'block').map(l => ({ l, d: cam.position.distanceTo(tv.set(...l.p)) })).sort((p, q) => p.d - q.d).forEach(({ l }) => { const x = parseFloat(l.d.style.left), y = parseFloat(l.d.style.top), w2 = l.d.offsetWidth / 2 + 4, h2 = l.d.offsetHeight / 2 + 2; if (placed.some(p => Math.abs(p[0] - x) < p[2] + w2 && Math.abs(p[1] - y) < p[3] + h2)) l.d.style.display = 'none'; else placed.push([x, y, w2, h2]); }); }
@@ -879,6 +926,7 @@ function setMode(m) {
  if (m === 'walk') startWalk(); if (m === 'tour') startTour();
  cam.fov = inside ? 70 : 45; cam.near = inside ? .1 : m === 'floor' ? .5 : 2; cam.updateProjectionMatrix();  // a larger near plane in the aerial views keeps distant roads and parks from flickering setSun(); lastRoom = undefined;
  document.querySelectorAll('#acts [data-m]').forEach(b => b.setAttribute('aria-pressed', b.dataset.m === m)); syncHash();
+ landmarks.forEach(l => l.occ = true); occTick = 11;  // hidden until the next visibility check, so no label flashes through a wall
 }
 document.querySelectorAll('#modes button').forEach(b => b.addEventListener('click', () => setMode(b.dataset.m)));
 
@@ -889,7 +937,7 @@ const setN = n => { n = Math.max(1, Math.min(56, n)); if (n !== sel.n) selectFlo
 $('#fdn').addEventListener('click', () => setN(sel.n - 1)); $('#fup').addEventListener('click', () => setN(sel.n + 1));
 let rT; $('#frange').addEventListener('input', e => { $('#fval').textContent = e.target.value; clearTimeout(rT); rT = setTimeout(() => setN(+e.target.value), 150); });
 $('#units').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; sel.u = b.dataset.u; renderUI(); if (mode === 'site') setMode('floor'); else if (mode === 'floor') focusUnit(); else if (mode === 'walk') startWalk(); else startTour(); if (innerWidth <= 860) togglePanel(false); });
-$('#rooms').addEventListener('click', e => { const b = e.target.closest('button'); if (!b || !FLOOR) return; const r = FLOOR.v.rooms[+b.dataset.i]; const c = labelPoint(r); if (mode !== 'walk') setMode('walk'); walker.x = c[0]; walker.z = c[1]; if (innerWidth <= 860) togglePanel(false); });
+$('#rooms').addEventListener('click', e => { const b = e.target.closest('button'); if (!b || !FLOOR) return; const r = FLOOR.v.rooms[+b.dataset.i]; const c = labelPoint(r); if (mode !== 'walk') setMode('walk'); placeWalker(c[0], c[1], r); if (innerWidth <= 860) togglePanel(false); });
 let lastHash = '', linkReady = false;
 function syncHash() { if (!linkReady) return; const u = FLOOR && FLOOR.units[sel.u]; if (!u) return; const h = `#${sel.t}-${u.flat}${mode === 'walk' || mode === 'tour' ? '/' + mode : ''}`; if (h !== location.hash) { lastHash = h; try { history.replaceState(null, '', h); } catch (e) { } } }
 // select a flat from what someone typed; returns false (with a note under the box) when the approved plan has no such flat
@@ -945,6 +993,26 @@ function blocked(x, z) {
  for (const [x1, y1, x2, y2, th] of FLOOR.coll) { const dx = x2 - x1, dy = y2 - y1, L2 = dx * dx + dy * dy || 1e-9; let t = ((x - x1) * dx + (z - y1) * dy) / L2; t = Math.max(0, Math.min(1, t)); const px = x1 + dx * t - x, pz = y1 + dy * t - z; if (px * px + pz * pz < (r + th / 2) ** 2) return true; }
  return false;
 }
+// how deep (m) a walker of radius r standing at x,z sits inside furniture; 0 when clear
+function furnPen(x, z, r = .22) { let p = 0; for (const q of (FLOOR && FLOOR.furnRects) || []) { const dx = Math.max(q[0] - x, 0, x - q[2]), dz = Math.max(q[1] - z, 0, z - q[3]), d = Math.hypot(dx, dz); if (d < r) p = Math.max(p, r - d + (dx === 0 && dz === 0 ? Math.min(x - q[0], q[2] - x, z - q[1], q[3] - z) : 0)); } return p; }
+const free = (x, z) => !blocked(x, z) && furnPen(x, z) === 0;
+// nearest spot where a person can actually stand (clear of walls and furniture), preferring the same room
+function standSpot(x, z, room) { if (free(x, z)) return [x, z]; for (let rad = .1; rad <= 3; rad += .1) { const n = Math.max(8, Math.round(rad * 40)); let alt = null; for (let k = 0; k < n; k++) { const a = k / n * Math.PI * 2, px = x + Math.cos(a) * rad, pz = z + Math.sin(a) * rad; if (!free(px, pz)) continue; if (!room || inRoom(room, px, pz)) return [px, pz]; alt = alt || [px, pz]; } if (alt && rad > 1.5) return alt; } return [x, z]; }
+function placeWalker(x, z, room) { const p = standSpot(x, z, room); walker.x = p[0]; walker.z = p[1]; }
+// shortest walkable route between two points on a 15 cm grid (walls and furniture are obstacles), smoothed to straight runs
+function route(a, b) {
+ const res = .15, x0 = Math.min(a[0], b[0]) - 6, z0 = Math.min(a[1], b[1]) - 6, nx = Math.ceil((Math.abs(a[0] - b[0]) + 12) / res), nz = Math.ceil((Math.abs(a[1] - b[1]) + 12) / res); if (nx * nz > 160000) return [b];
+ const id = (i, j) => j * nx + i, cell = p => [Math.round((p[0] - x0) / res), Math.round((p[1] - z0) / res)], pt = (i, j) => [x0 + i * res, z0 + j * res];
+ const [si, sj] = cell(a), [gi, gj] = cell(b), okc = new Int8Array(nx * nz).fill(-1), ok = (i, j) => { const k = id(i, j); if (okc[k] < 0) { const [x, z] = pt(i, j); okc[k] = free(x, z) ? 1 : 0; } return okc[k] === 1; };
+ const g = new Float32Array(nx * nz).fill(Infinity), from = new Int32Array(nx * nz).fill(-1), open = [[0, si, sj]]; g[id(si, sj)] = 0; let found = false, it = 0;
+ while (open.length && it++ < 60000) { let bi = 0; for (let k = 1; k < open.length; k++) if (open[k][0] < open[bi][0]) bi = k; const [, i, j] = open.splice(bi, 1)[0]; if (i === gi && j === gj) { found = true; break; }
+  for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) { const a2 = i + di, b2 = j + dj; if (a2 < 0 || b2 < 0 || a2 >= nx || b2 >= nz) continue; if (!(a2 === gi && b2 === gj) && !ok(a2, b2)) continue; if (di && dj && (!ok(i + di, j) || !ok(i, j + dj))) continue;
+   const ng = g[id(i, j)] + Math.hypot(di, dj); if (ng < g[id(a2, b2)]) { g[id(a2, b2)] = ng; from[id(a2, b2)] = id(i, j); open.push([ng + Math.hypot(gi - a2, gj - b2), a2, b2]); } } }
+ if (!found) return [b];
+ const path = []; for (let k = id(gi, gj); k >= 0 && k !== id(si, sj); k = from[k]) path.push(pt(k % nx, Math.floor(k / nx))); path.reverse(); if (!path.length) return [b];
+ const clear = (p, q) => { const L = Math.hypot(q[0] - p[0], q[1] - p[1]), n = Math.ceil(L / .08); for (let k = 1; k < n; k++) { const t = k / n; if (!free(p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t)) return false; } return true; };
+ const out = []; let cur = a; for (let k = 0; k < path.length; k++) { if (k === path.length - 1 || !clear(cur, path[k + 1])) { out.push(path[k]); cur = path[k]; } } out[out.length - 1] = b; return out;
+}
 const keys = {};
 addEventListener('keydown', e => { if (/INPUT|SELECT|BUTTON/.test(e.target.tagName) && e.target.type !== 'checkbox') { if (e.target.tagName !== 'BUTTON') return; } keys[e.key.toLowerCase()] = 1; if (mode === 'walk' && ['arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(e.key.toLowerCase())) e.preventDefault(); });
 addEventListener('keyup', e => keys[e.key.toLowerCase()] = 0);
@@ -956,14 +1024,16 @@ function walkStep(dt) {
  walker.yaw += turn * dt * 1.6; if (!f && !s) return;
  const sp = (keys.shift ? 3.6 : 1.8) * dt, fx = -Math.sin(walker.yaw), fz = -Math.cos(walker.yaw);
  const dx = (fx * f - fz * s) * sp, dz = (fz * f + fx * s) * sp;
- if (!blocked(walker.x + dx, walker.z)) walker.x += dx; if (!blocked(walker.x, walker.z + dz)) walker.z += dz;
+ // walls always stop you; furniture stops you walking into it (but never traps you if you start inside it)
+ const can = (x, z) => !blocked(x, z) && furnPen(x, z) <= furnPen(walker.x, walker.z) + 1e-4;
+ if (can(walker.x + dx, walker.z)) walker.x += dx; if (can(walker.x, walker.z + dz)) walker.z += dz;
 }
 
 /* ================= tour (generated from the door graph) ================= */
 let TOUR = [], tourI = 0, tourHold = 0, tourPaused = false, tourCap = '';
 function startTour() {
  TOUR = buildTour(); TOUR.forEach(w => w.done = false); tourI = 0; tourHold = 0; tourPaused = false; tourCap = ''; $('#tplay').textContent = 'Pause';
- if (TOUR.length) { walker.x = TOUR[0].p[0]; walker.z = TOUR[0].p[1]; walker.yaw = Math.atan2(-(TOUR[0].l[0] - walker.x), -(TOUR[0].l[1] - walker.z)); walker.pitch = -.05; }
+ if (TOUR.length) { placeWalker(TOUR[0].p[0], TOUR[0].p[1]); walker.yaw = Math.atan2(-(TOUR[0].l[0] - walker.x), -(TOUR[0].l[1] - walker.z)); walker.pitch = -.05; }
  lastRoom = undefined;
 }
 function buildTour() {
@@ -998,12 +1068,16 @@ function buildTour() {
 }
 function tourStep(dt) {
  if (tourPaused) return; const w = TOUR[tourI];
+ // each stop is moved to a real standing spot and routed around furniture when it comes up (furniture may load after the tour starts)
+ if (w && !w.snapped) { w.snapped = true; w.p = standSpot(w.p[0], w.p[1], FLOOR.v.rooms.find(r => r.u === sel.u && inRoom(r, ...w.p))); }
  if (w && w.jump && !w.done) { w.done = true; walker.x = w.p[0]; walker.z = w.p[1]; walker.yaw = Math.atan2(-(w.l[0] - w.p[0]), -(w.l[1] - w.p[1])); }
  if (!w) { tourPaused = true; $('#tplay').textContent = 'Replay'; $('#cap').textContent = 'That is the whole flat. Switch to Walk to explore on your own.'; return; }
- const dx = w.p[0] - walker.x, dz = w.p[1] - walker.z, d = Math.hypot(dx, dz);
- const lk = d > .6 ? [w.p[0] + dx / d * 2, w.p[1] + dz / d * 2] : w.l;
+ if (!w.route) w.route = route([walker.x, walker.z], w.p);
+ while (w.route.length > 1 && Math.hypot(w.route[0][0] - walker.x, w.route[0][1] - walker.z) < .08) w.route.shift();
+ const tgt = w.route[0] || w.p, dx = tgt[0] - walker.x, dz = tgt[1] - walker.z, dd = Math.hypot(dx, dz), d = w.route.length > 1 ? dd + 1 : dd;
+ const lk = d > .6 ? [tgt[0] + dx / (dd || 1) * 2, tgt[1] + dz / (dd || 1) * 2] : w.l;
  const want = Math.atan2(-(lk[0] - walker.x), -(lk[1] - walker.z)); let dy = want - walker.yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy)); walker.yaw += dy * Math.min(1, dt * (d > .6 ? 3.2 : 2.4)); walker.pitch += (-.05 - walker.pitch) * dt * 2;
- if (d > .06) { const sp = Math.min(d, 1.5 * dt); walker.x += dx / d * sp; walker.z += dz / d * sp; }
+ if (d > .06) { const sp = Math.min(dd, 1.5 * dt); if (dd > 1e-6) { walker.x += dx / dd * sp; walker.z += dz / dd * sp; } }
  else { if (w.c && tourCap !== w.c) { tourCap = w.c; $('#cap').textContent = w.c; } tourHold += dt; if (tourHold >= w.h + (w.h ? .8 : 0)) { tourI++; tourHold = 0; } }
 }
 $('#tplay').addEventListener('click', () => { if (!TOUR[tourI]) { startTour(); return; } tourPaused = !tourPaused; $('#tplay').textContent = tourPaused ? 'Play' : 'Pause'; });
@@ -1025,7 +1099,7 @@ const ray = new T.Raycaster(), ndc = new T.Vector2();
 function floorHit(e) { if (!FLOOR || mode !== 'floor') return null; ndc.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); ray.setFromCamera(ndc, cam); return ray.intersectObjects(FLOOR.floorMeshes)[0]; }
 cv.addEventListener('pointerup', e => { const was = ptrs.has(e.pointerId); ptrs.delete(e.pointerId); pinch = 0; if (was && moved < 6) { const h = floorHit(e); if (h && h.object.userData.u && h.object.userData.u !== sel.u) { sel.u = h.object.userData.u; renderUI(); focusUnit(); } } });
 cv.addEventListener('pointercancel', e => { ptrs.delete(e.pointerId); pinch = 0; });
-cv.addEventListener('dblclick', e => { const h = floorHit(e); if (!h) return; const loc = FLOOR.grp.worldToLocal(h.point.clone()); if (h.object.userData.u) sel.u = h.object.userData.u; renderUI(); setMode('walk'); walker.x = loc.x; walker.z = loc.z; walker.yaw = orb.th; });
+cv.addEventListener('dblclick', e => { const h = floorHit(e); if (!h) return; const loc = FLOOR.grp.worldToLocal(h.point.clone()); if (h.object.userData.u) sel.u = h.object.userData.u; renderUI(); setMode('walk'); placeWalker(loc.x, loc.z); walker.yaw = orb.th; });
 cv.addEventListener('wheel', e => { e.preventDefault(); if (mode === 'walk' || mode === 'tour') { cam.fov = T.MathUtils.clamp(cam.fov + e.deltaY * .03, 35, 85); cam.updateProjectionMatrix(); return; } orbT.r = T.MathUtils.clamp(orbT.r * Math.exp(e.deltaY * .0012), 8, 1400); }, { passive: false });
 
 /* ================= mini plan ================= */
@@ -1047,7 +1121,7 @@ function drawMM() {
  mg.fillStyle = 'rgba(240,207,140,.35)'; mg.beginPath(); mg.moveTo(qx, qz); mg.arc(qx, qz, 22, a - .5, a + .5); mg.fill(); mg.fillStyle = '#f0cf8c'; mg.beginPath(); mg.arc(qx, qz, 3.5, 0, 7); mg.fill();
  { const cx = Wc - 14, cy = 16; mg.save(); mg.translate(cx, cy); mg.rotate(-NORTH_ROT); mg.strokeStyle = mg.fillStyle = '#ece8e1'; mg.lineWidth = 1.5; mg.beginPath(); mg.moveTo(0, 8); mg.lineTo(0, -7); mg.stroke(); mg.beginPath(); mg.moveTo(0, -9); mg.lineTo(-3.5, -3); mg.lineTo(3.5, -3); mg.fill(); mg.restore(); mg.font = '600 11px Figtree'; mg.fillText('N', cx - 15, cy + 4); }
 }
-mmc.addEventListener('click', e => { if (!FLOOR) return; const b = mmc.getBoundingClientRect(); const x = (e.clientX - b.left) * mmc.width / b.width / MM.s + MM.x0, y = (e.clientY - b.top) * mmc.height / b.height / MM.s + MM.y0; if (!pip(FLOOR.v.plate, x, y)) return; const r = FLOOR.v.rooms.find(q => inRoom(q, x, y)); if (r && r.u) { sel.u = r.u; renderUI(); } if (mode !== 'walk') setMode('walk'); walker.x = x; walker.z = y; });
+mmc.addEventListener('click', e => { if (!FLOOR) return; const b = mmc.getBoundingClientRect(); const x = (e.clientX - b.left) * mmc.width / b.width / MM.s + MM.x0, y = (e.clientY - b.top) * mmc.height / b.height / MM.s + MM.y0; if (!pip(FLOOR.v.plate, x, y)) return; const r = FLOOR.v.rooms.find(q => inRoom(q, x, y)); if (r && r.u) { sel.u = r.u; renderUI(); } if (mode !== 'walk') setMode('walk'); placeWalker(x, y, r); });
 
 /* ================= loop ================= */
 function resize() { const w = innerWidth, h = innerHeight; ren.setSize(w, h, false); cam.aspect = w / h; cam.updateProjectionMatrix(); const s = innerWidth <= 860 ? .62 : 1; mmc.style.width = 210 * s + 'px'; mmc.style.height = 210 * s + 'px'; }
