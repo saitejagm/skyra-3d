@@ -5,6 +5,8 @@ then walk through it or take the guided tour. A link like `#B-2904/tour` opens t
 
 **How it was made**
 - Walls, doors, windows, balconies, lifts and stairs are read from the sanctioned building plans in the project's RERA filing (TS/069953/2024).
+- The four common basements (parking bays, driveways, ramps, service rooms), each tower's stilt floor and terrace come from the same sanctioned sheets.
+  Stilt and sky-level amenities are the brochure's list, placed approximately; parked cars are illustrative.
 - Flat numbers, facing and saleable sizes are from the sales brochure. Furniture is illustrative.
 - The surroundings are from [OpenStreetMap](https://www.openstreetmap.org/copyright) (© OpenStreetMap contributors, ODbL),
   aligned to the site to within roughly 20–30 m. Neighbouring towers under construction are drawn at their published floors, laid out approximately.

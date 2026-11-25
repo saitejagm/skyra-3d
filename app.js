@@ -193,13 +193,14 @@ function towerMassing(t, cut) {
  if (towerGrp[t]) { scene.remove(towerGrp[t]); towerGrp[t].traverse(o => { if (o.geometry && o.geometry !== boxG) o.geometry.dispose(); }); }
  const g = new T.Group(); g.position.set(TW[t].O[0], 0, TW[t].O[1]); towerGrp[t] = g; scene.add(g);
  const plate = TW[t].typ.plate;
- const stilt = extrude(plate, L1 - STILT - .3, M_STILTG); stilt.position.y = STILT; stilt.scale.set(.985, .985, 1); g.add(stilt);
+ if (!(cut && cut.n === 0)) { const stilt = extrude(plate, L1 - STILT - .3, M_STILTG); stilt.position.y = STILT; stilt.scale.set(.985, .985, 1); g.add(stilt); }
  const podium = extrude(plate, .3, M_SLAB); podium.position.y = L1 - .3; g.add(podium);
  const mk = (y0, y1, tag) => { if (y1 - y0 < .1) return; const m = extrude(plate, y1 - y0, [M_CAP, M_FACADE]); m.position.y = y0; m.userData.part = tag; g.add(m); return m; };
- if (!cut) mk(L1, TOP, 'all');
+ if (!cut || cut.n === TERR) mk(L1, TOP, 'all');
+ else if (cut.n <= 0) g.userData.above = mk(L1, TOP, 'above');
  else { mk(L1, lvl(cut.n), 'below'); g.userData.above = mk(lvl(cut.n) + CH, TOP, 'above'); }
  // rooftop machine room over the lift core
- const lf = TW[t].typ.lift; if (lf.length) { const x1 = Math.min(...lf.map(q => q[0])) - 1, y1 = Math.min(...lf.map(q => q[1])) - 1, x2 = Math.max(...lf.map(q => q[2])) + 1, y2 = Math.max(...lf.map(q => q[3])) + 1; const r = new T.Mesh(boxG, M_CAP); r.scale.set(x2 - x1, 5, y2 - y1); r.position.set((x1 + x2) / 2, TOP + 2.5, (y1 + y2) / 2); r.castShadow = true; g.add(r); }
+ const lf = TW[t].typ.lift; if (lf.length && !(cut && cut.n === TERR)) { const x1 = Math.min(...lf.map(q => q[0])) - 1, y1 = Math.min(...lf.map(q => q[1])) - 1, x2 = Math.max(...lf.map(q => q[2])) + 1, y2 = Math.max(...lf.map(q => q[3])) + 1; const r = new T.Mesh(boxG, M_CAP); r.scale.set(x2 - x1, 5, y2 - y1); r.position.set((x1 + x2) / 2, TOP + 2.5, (y1 + y2) / 2); r.castShadow = true; g.add(r); }
  // balconies on every floor (slabs + glass), skipping the open floor
  const B = TW[t].typ.balc, floors = []; for (let n = 1; n <= 56; n++) if (!cut || n !== cut.n) floors.push(n);
  const sl = new T.InstancedMesh(boxG, M_SLAB, B.length * floors.length), gl = new T.InstancedMesh(boxG, glassM, B.length * floors.length); const m4 = new T.Matrix4(); let k = 0, kAbove = [];
@@ -209,6 +210,191 @@ function towerMassing(t, cut) {
   const above = floors.filter(n => n > cut.n).length * B.length; g.userData.balcAboveFrom = k - above; g.userData.sl = sl; g.userData.gl = gl; g.userData.total = k;
  }
  return g;
+}
+
+/* ================= levels beyond the flats: four basements, the stilt (ground) floor and the terrace ================= */
+// Basements come from the sanctioned common-basement sheet (1:200), the stilt from each tower's "stilt one floor plan",
+// the terrace from the tower outline and its lift/stair heads. Amenities on the stilt and terrace are the brochure's list,
+// laid out approximately (the plans don't place them).
+const TERR = 57, BASE_Y = { '-1': -4.4, '-2': -7.9, '-3': -11.4, '-4': -14.9 };
+const levelY = n => n >= 1 && n <= 56 ? lvl(n) : n === 0 ? STILT : n === TERR ? TOP : BASE_Y[n];
+const lname = n => n < 0 ? 'B' + (-n) : n === 0 ? 'G' : n === TERR ? 'T' : String(n);
+const lfull = n => n < 0 ? `Basement ${-n} · parking` : n === 0 ? 'Ground · stilt' : n === TERR ? 'Terrace' : `Floor ${n}`;
+const isSpecial = n => n <= 0 || n === TERR;
+let BASE = null, STILTD = null;
+const levelData = Promise.all([fetch('basement.json?v=1').then(r => r.json()), fetch('stilt.json?v=1').then(r => r.json())]).then(([b, s]) => { BASE = b; STILTD = s; }).catch(e => console.warn('levels', e));
+const Fr = (x, z, rot) => ({ rot, P: (u, v) => [x + u * Math.cos(rot) + v * Math.sin(rot), z - u * Math.sin(rot) + v * Math.cos(rot)] });
+const quadC = q => [q.reduce((s, p) => s + p[0], 0) / q.length, q.reduce((s, p) => s + p[1], 0) / q.length];
+const rectQ = r => [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]];
+// greedy free rectangles on a boolean grid (largest first), each kept `gap` cells apart from the others
+function freeRects(ok, nx, nz, res, x0, z0, count, minW, minD, maxW, maxD) {
+ const used = new Uint8Array(nx * nz), out = [];
+ for (let k = 0; k < count; k++) {
+  const h = new Array(nx).fill(0); let best = null;
+  for (let j = 0; j < nz; j++) { for (let i = 0; i < nx; i++) h[i] = ok[j * nx + i] && !used[j * nx + i] ? h[i] + 1 : 0;
+   const st = []; for (let i = 0; i <= nx; i++) { const hh = i < nx ? h[i] : 0; let s = i; while (st.length && st[st.length - 1][1] >= hh) { const [si, sh] = st.pop(); let w = (i - si) * res, d = sh * res; const W2 = Math.min(w, maxW), D2 = Math.min(d, maxD); if (W2 >= minW && D2 >= minD) { const a = W2 * D2; if (!best || a > best.a) best = { a, i0: si, i1: si + Math.round(W2 / res), j0: j + 1 - Math.round(D2 / res), j1: j + 1 }; } s = si; } st.push([s, hh]); } }
+  if (!best) break; out.push([x0 + best.i0 * res, z0 + best.j0 * res, x0 + best.i1 * res, z0 + best.j1 * res]);
+  for (let j = Math.max(0, best.j0 - 3); j < Math.min(nz, best.j1 + 3); j++) for (let i = Math.max(0, best.i0 - 3); i < Math.min(nx, best.i1 + 3); i++) used[j * nx + i] = 1;
+ }
+ return out;
+}
+function buildSpecial(t, n) {
+ if (FLOOR) { scene.remove(FLOOR.grp); FLOOR.grp.traverse(o => { if (o.geometry && o.geometry !== boxG) o.geometry.dispose(); }); FLOOR.labels.forEach(l => l.d.remove()); }
+ const O = TW[t].O, grp = new T.Group(); grp.position.set(O[0], levelY(n), O[1]); scene.add(grp);
+ const coll = [], labels = [], furn = new T.Group(); grp.add(furn);
+ const lab = (txt, sub, x, z) => { const d = document.createElement('div'); d.className = 'lb'; d.innerHTML = txt + (sub ? `<i>${sub}</i>` : ''); LBL.appendChild(d); labels.push({ d, p: [x, .3, z], kind: 'free' }); };
+ const wallAcc = new Acc(), coreAcc = new Acc();
+ const solids = [];
+ const solidQ = (q, h, acc, y0 = 0) => { solids.push(q); const xs = q.map(p => p[0]), zs = q.map(p => p[1]); const a = Math.atan2(-(q[1][1] - q[0][1]), q[1][0] - q[0][0]), L1q = Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]), L2q = Math.hypot(q[2][0] - q[1][0], q[2][1] - q[1][1]); const [cx, cz] = quadC(q); acc.box(cx, y0 + h / 2, cz, L1q, h, L2q, a); for (let k = 0; k < 4; k++) { const p = q[k], r = q[(k + 1) % 4]; coll.push([p[0], p[1], r[0], r[1], .05]); } };
+ const wallSeg = (a, b, h, th, acc = wallAcc) => { const L = Math.hypot(b[0] - a[0], b[1] - a[1]); if (L < .05) return; acc.box((a[0] + b[0]) / 2, h / 2, (a[1] + b[1]) / 2, L, h, th, Math.atan2(-(b[1] - a[1]), b[0] - a[0])); coll.push([a[0], a[1], b[0], b[1], th]); };
+ let v, start, zones = [], furnish = () => {};
+ if (n < 0) ({ v, start, furnish } = basementLevel(t, n, { O, grp, lab, solidQ, wallSeg, coreAcc, coll }));
+ else if (n === 0) ({ v, start, zones, furnish } = stiltLevel(t, { O, grp, lab, solidQ, wallSeg, coreAcc, coll }));
+ else ({ v, start, zones, furnish } = terraceLevel(t, { O, grp, lab, solidQ, wallSeg, coreAcc, coll }));
+ const wm = wallAcc.mesh(n < 0 ? mat('#a7a39b') : M_WALL); if (wm) grp.add(wm); const cm = coreAcc.mesh(M_CORE); if (cm) grp.add(cm);
+ grp.traverse(o => { if (o.isMesh && o.material && !o.material.clippingPlanes) { o.material = o.material.clone(); o.material.clippingPlanes = [CLIP]; } });
+ FLOOR = { grp, v, t, n, coll, units: {}, labels, floorMeshes: [], clipY: CLIP, furn, wins: [], leaves: null, BG: [], furnU: {}, segs: [], furnRects: [], special: true, start, heroFor: null, solids, ch: n < 0 ? 3.3 : n === 0 ? L1 - STILT - .3 : 1e3 };
+ const go = () => { if (!FLOOR || FLOOR.grp !== grp) return; HG = new T.Group(); FLOOR.hero = HG; grp.add(HG); HG.visible = $('#furn').checked; furnish(zones); sectionCaps(HG); furnitureFootprints(HG); applyVisibility(); };
+ if (ASSET.ready) go(); else loadAssets().then(go);
+}
+
+/* ---- basements ---- */
+function basementLevel(t, n, k) {
+ const L = BASE['B' + (-n)], O = k.O, loc = p => [p[0] - O[0], p[1] - O[1]], H = 3.3;
+ const all = [].concat(...['wall', 'bay', 'drv', 'ramp'].map(key => (L[key] || []).flat())).map(loc);
+ const x0 = Math.min(...all.map(p => p[0])) - 1, x1 = Math.max(...all.map(p => p[0])) + 1, z0 = Math.min(...all.map(p => p[1])) - 1, z1 = Math.max(...all.map(p => p[1])) + 1;
+ const plate = [[x0, z0], [x1, z0], [x1, z1], [x0, z1]];
+ const floorM = mat('#6f7477', { roughness: .45, metalness: .05 }); const fl = flat(plate, floorM, .002); k.grp.add(fl);
+ const ceil = new T.Mesh(boxG, mat('#b9b6ae')); ceil.scale.set(x1 - x0, .3, z1 - z0); ceil.position.set((x0 + x1) / 2, H + .15, (z0 + z1) / 2); ceil.castShadow = true; ceil.receiveShadow = true; k.grp.add(ceil);
+ // driveways: darker epoxy with a dashed centre line
+ const drvM = mat('#6c7175', { roughness: .4 }), dash = new Acc();
+ (L.drv || []).forEach(q => { const lq = q.map(loc); const m = new T.Mesh(new T.ShapeGeometry(shapeOf(lq)), drvM); m.rotation.x = -Math.PI / 2; m.position.y = .006; k.grp.add(m);
+  const e1 = Math.hypot(lq[1][0] - lq[0][0], lq[1][1] - lq[0][1]), e2 = Math.hypot(lq[2][0] - lq[1][0], lq[2][1] - lq[1][1]); const [cx, cz] = quadC(lq); const [a, b] = e1 > e2 ? [lq[0], lq[1]] : [lq[1], lq[2]]; const L2 = Math.max(e1, e2), ux = (b[0] - a[0]) / Math.hypot(b[0] - a[0], b[1] - a[1]), uz = (b[1] - a[1]) / Math.hypot(b[0] - a[0], b[1] - a[1]), ang = Math.atan2(-uz, ux);
+  for (let s = -L2 / 2 + 1; s < L2 / 2 - 1; s += 3) dash.box(cx + ux * s, .01, cz + uz * s, 1.5, .004, .12, ang);
+ });
+ const dm = dash.mesh(mat('#e9c74a', { roughness: .5 }), false); if (dm) k.grp.add(dm);
+ const tubes = new Acc(); (L.drv || []).forEach(q => { const lq = q.map(loc); const e1 = Math.hypot(lq[1][0] - lq[0][0], lq[1][1] - lq[0][1]), e2 = Math.hypot(lq[2][0] - lq[1][0], lq[2][1] - lq[1][1]); const [cx, cz] = quadC(lq); const [a, b] = e1 > e2 ? [lq[0], lq[1]] : [lq[1], lq[2]]; const L2 = Math.max(e1, e2), d = Math.hypot(b[0] - a[0], b[1] - a[1]), ux = (b[0] - a[0]) / d, uz = (b[1] - a[1]) / d, ang = Math.atan2(-uz, ux); for (let s = -L2 / 2 + 2; s < L2 / 2 - 1; s += 6) tubes.box(cx + ux * s, H - .06, cz + uz * s, 1.25, .05, .12, ang); });
+ const tm = tubes.mesh(mat('#ffffff', { emissive: lin('#f4f7ff'), emissiveIntensity: 2.2 }), false); if (tm) k.grp.add(tm);
+ // bays: painted white lines
+ const lines = new Acc(), bays = (L.bay || []).map(q => q.map(loc));
+ bays.forEach(q => { for (let e = 0; e < 4; e++) { const a = q[e], b = q[(e + 1) % 4], Le = Math.hypot(b[0] - a[0], b[1] - a[1]); lines.box((a[0] + b[0]) / 2, .008, (a[1] + b[1]) / 2, Le, .004, .08, Math.atan2(-(b[1] - a[1]), b[0] - a[0])); } });
+ const lm = lines.mesh(mat('#f1efe8', { roughness: .6 }), false); if (lm) k.grp.add(lm);
+ // walls, cores, shafts, rooms
+ (L.wall || []).forEach(([a, b]) => k.wallSeg(loc(a), loc(b), H, .3));
+ const coreQ = (key, h = H) => (L[key] || []).forEach(q => k.solidQ(q.map(loc), h, k.coreAcc));
+ ['lift', 'stair', 'meter', 'shaft', 'room'].forEach(key => coreQ(key));
+ (L.lobby || []).forEach(q => { const lq = q.map(loc); const m = new T.Mesh(new T.ShapeGeometry(shapeOf(lq)), mat('#cfc6b6', { roughness: .3 })); m.rotation.x = -Math.PI / 2; m.position.y = .012; k.grp.add(m); });
+ // ramps: sloped deck with side walls
+ (L.ramp || []).forEach(q => { const lq = q.map(loc); const e1 = Math.hypot(lq[1][0] - lq[0][0], lq[1][1] - lq[0][1]), e2 = Math.hypot(lq[2][0] - lq[1][0], lq[2][1] - lq[1][1]); const long = e1 > e2, Lr = Math.max(e1, e2), Wr = Math.min(e1, e2); const [cx, cz] = quadC(lq); const [a, b] = long ? [lq[0], lq[1]] : [lq[1], lq[2]]; const ang = Math.atan2(-(b[1] - a[1]), b[0] - a[0]);
+  const r = new T.Mesh(boxG, mat('#7d8184', { roughness: .5 })); r.scale.set(Lr, .25, Wr); r.position.set(cx, 1.6, cz); r.rotation.set(0, ang, 0); r.rotateZ(Math.atan2(3.3, Lr)); r.castShadow = true; k.grp.add(r);
+  const side = long ? [[lq[0], lq[1]], [lq[3], lq[2]]] : [[lq[1], lq[2]], [lq[0], lq[3]]]; side.forEach(([p, s]) => k.wallSeg(p, s, 1.1, .2));
+  k.lab('Ramp', '', cx, cz); });
+ // names of the service rooms and lift lobbies
+ const near = (x, z) => [...(L.room || []), ...(L.shaft || [])].some(q => { const lq = q.map(loc), xs = lq.map(p => p[0]), zs = lq.map(p => p[1]); return x > Math.min(...xs) - 1 && x < Math.max(...xs) + 1 && z > Math.min(...zs) - 1 && z < Math.max(...zs) + 1; });
+ const seen = new Set(); (L.texts || []).forEach(([s, x, z]) => { const u = s.toUpperCase(); const [lx, lz] = loc([x, z]); if (/STP|SEWAGE|GENERATOR|PUMP|SUMP|TRANSFORMER|DG |VISITOR|ELECTRICAL|HSD|SUB.?STATION/.test(u) && !seen.has(u)) { seen.add(u); k.lab(s.charAt(0) + s.slice(1).toLowerCase(), '', lx, lz); } });
+ // lift lobbies to each tower
+ const lifts = (L.lift || []).map(q => quadC(q.map(loc))); const towers = 'ABC'.split('').map(tt => { const c = [TW[tt].c[0] - O[0], TW[tt].c[1] - O[1]]; const ls = lifts.filter(p => Math.hypot(p[0] - c[0], p[1] - c[1]) < 30); return { tt, c: ls.length ? [ls.reduce((s, p) => s + p[0], 0) / ls.length, ls.reduce((s, p) => s + p[1], 0) / ls.length] : c }; });
+ towers.forEach(({ tt, c }) => k.lab(`Lifts to ${TW[tt].name}`, '', c[0], c[1]));
+ const mine = towers.find(o => o.tt === t).c;
+ // parked cars in about two of every three bays (same cars every visit)
+ const furnish = () => {
+  const cars = bays.filter((q, i) => ((i * 2654435761) >>> 0) % 100 < 66 && Math.hypot(q[0][0] - q[1][0], q[0][1] - q[1][1]) > 1.8);
+  const N = cars.length; if (!N) return;
+  const body = new T.InstancedMesh(new T.BoxGeometry(1, 1, 1), new T.MeshStandardMaterial({ roughness: .3, metalness: .5, clippingPlanes: [CLIP] }), N), cab = new T.InstancedMesh(new T.BoxGeometry(1, 1, 1), new T.MeshStandardMaterial({ color: lin('#1d2228'), roughness: .1, metalness: .4, clippingPlanes: [CLIP] }), N), wh = new T.InstancedMesh(new T.CylinderGeometry(.33, .33, .22, 14).rotateX(Math.PI / 2), new T.MeshStandardMaterial({ color: lin('#141414'), roughness: .7, clippingPlanes: [CLIP] }), N * 4);
+  const cols = ['#f2f2f0', '#c9ccd0', '#1c1f24', '#7b8086', '#8c1d22', '#24406b', '#ece7dc', '#3b4a3f'].map(c => new T.Color(c)), m4 = new T.Matrix4(), qt = new T.Quaternion(), up = new T.Vector3(0, 1, 0);
+  cars.forEach((q, i) => { const e1 = Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]), e2 = Math.hypot(q[2][0] - q[1][0], q[2][1] - q[1][1]); const [a, b] = e1 > e2 ? [q[0], q[1]] : [q[1], q[2]]; const ang = Math.atan2(-(b[1] - a[1]), b[0] - a[0]); const [cx, cz] = quadC(q); qt.setFromAxisAngle(up, ang);
+   const len = 4.3 + (i % 3) * .2, wd = 1.8; m4.compose(new T.Vector3(cx, .62, cz), qt, new T.Vector3(len, .72, wd)); body.setMatrixAt(i, m4); body.setColorAt(i, cols[(i * 7) % cols.length]);
+   const off = (i % 2 ? .15 : -.15), ox = Math.cos(ang) * off, oz = -Math.sin(ang) * off; m4.compose(new T.Vector3(cx + ox, 1.2, cz + oz), qt, new T.Vector3(len * .55, .5, wd * .9)); cab.setMatrixAt(i, m4);
+   [[1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(([sx, sz], w) => { const lx = sx * len * .34, lz = sz * wd * .47; m4.compose(new T.Vector3(cx + lx * Math.cos(ang) + lz * Math.sin(ang), .33, cz - lx * Math.sin(ang) + lz * Math.cos(ang)), qt, new T.Vector3(1, 1, 1)); wh.setMatrixAt(i * 4 + w, m4); }); });
+  [body, cab, wh].forEach(m => { m.castShadow = false; m.receiveShadow = true; HG.add(m); });
+  // cars are solid
+  cars.forEach(q => { const xs = q.map(p => p[0]), zs = q.map(p => p[1]); FLOOR.coll.push(...rectQ([Math.min(...xs) + .35, Math.min(...zs) + .35, Math.max(...xs) - .35, Math.max(...zs) - .35]).map((p, e, A) => [p[0], p[1], A[(e + 1) % 4][0], A[(e + 1) % 4][1], .05])); });
+ };
+ const v = { plate, balc: [], doors: [], dk: [], rooms: [], lift: [], stair: [], meter: [], void: [], winq: [], wk: [], free: [], tags: [], floors: [], outline: [],
+  mm: [...(L.drv || []).map(q => [q.map(loc), '#4a5058']), ...bays.map(q => [q, '#3b4f45']), ...['lift', 'stair', 'meter', 'shaft', 'room'].flatMap(key => (L[key] || []).map(q => [q.map(loc), '#8a8f98']))] };
+ return { v, start: [mine[0] + 4, mine[1] + 4, 0], furnish };
+}
+
+/* ---- stilt (ground) ---- */
+function stiltLevel(t, k) {
+ const S = STILTD[t], typ = TW[t].typ, plate = typ.plate, H = L1 - STILT - .3;
+ k.grp.add(flat(plate, M_STONE, .004));
+ // columns at the outline's corners, cores, shafts, fire command centre
+ plate.forEach((p, i) => { const a = plate[(i + plate.length - 1) % plate.length], b = plate[(i + 1) % plate.length], cr = (p[0] - a[0]) * (b[1] - p[1]) - (p[1] - a[1]) * (b[0] - p[0]); if (Math.abs(cr) < .5) return; const c = [p[0] + Math.sign((a[0] + b[0]) / 2 - p[0]) * .45, p[1] + Math.sign((a[1] + b[1]) / 2 - p[1]) * .45]; k.solidQ(rectQ([c[0] - .35, c[1] - .35, c[0] + .35, c[1] + .35]), H, k.coreAcc); });
+ S.lift.concat(S.stair, S.meter).forEach(r => k.solidQ(rectQ(r), H, k.coreAcc));
+ S.other.forEach(([c, ...r]) => { if (c === '(0.54, 0.87, 0.43)') { k.solidQ(rectQ(r), 1.2, k.coreAcc); k.lab('Ventilation shaft', 'from the basements', (r[0] + r[2]) / 2, (r[1] + r[3]) / 2); } else if (c === '(0.45, 0.39, 0.22)') { k.solidQ(rectQ(r), 3, k.coreAcc); k.lab('Fire command centre', '', (r[0] + r[2]) / 2, (r[1] + r[3]) / 2); } });
+ // the lobby's glass enclosure, double height, with sliding entrances in its longer runs
+ const gl = new Acc(), mul = new Acc();
+ S.lobby.forEach(([ax, az, bx, bz]) => { const L = Math.hypot(bx - ax, bz - az); if (L < .2) return; const ux = (bx - ax) / L, uz = (bz - az) / L, ang = Math.atan2(-uz, ux);
+  const runs = L > 6 ? [[0, L / 2 - 1.2], [L / 2 + 1.2, L]] : [[0, L]];
+  runs.forEach(([s0, s1]) => { const p = [ax + ux * s0, az + uz * s0], q = [ax + ux * s1, az + uz * s1], Lr = s1 - s0; if (Lr < .05) return; gl.box((p[0] + q[0]) / 2, H / 2, (p[1] + q[1]) / 2, Lr, H, .03, ang); k.coll.push([p[0], p[1], q[0], q[1], .06]); for (let s = 0; s <= Lr; s += 1.5) mul.box(p[0] + ux * s, H / 2, p[1] + uz * s, .06, H, .1, ang); mul.box((p[0] + q[0]) / 2, 2.7, (p[1] + q[1]) / 2, Lr, .08, .1, ang); });
+  if (L > 6) { const m = [ax + ux * L / 2, az + uz * L / 2]; mul.box(m[0], 2.55, m[1], 2.4, .3, .14, ang); } });
+ const gm = gl.mesh(glassM.clone(), false); if (gm) k.grp.add(gm); const mm = mul.mesh(mat('#2b2e33', { metalness: .6, roughness: .35 })); if (mm) k.grp.add(mm);
+ // where is the lobby: cells enclosed by the glass (flood from the outline inward)
+ const res = .5, xs = plate.map(p => p[0]), zs = plate.map(p => p[1]), x0 = Math.min(...xs), z0 = Math.min(...zs), nx = Math.ceil((Math.max(...xs) - x0) / res), nz = Math.ceil((Math.max(...zs) - z0) / res);
+ const inP = new Uint8Array(nx * nz), bar = new Uint8Array(nx * nz), out = new Uint8Array(nx * nz), X = i => x0 + (i + .5) * res, Z = j => z0 + (j + .5) * res;
+ for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) inP[j * nx + i] = pip(plate, X(i), Z(j)) ? 1 : 0;
+ S.lobby.forEach(([ax, az, bx, bz]) => { const L = Math.hypot(bx - ax, bz - az); for (let s = 0; s <= L; s += res / 2) { const i = Math.floor((ax + (bx - ax) * s / L - x0) / res), j = Math.floor((az + (bz - az) * s / L - z0) / res); if (i >= 0 && j >= 0 && i < nx && j < nz) bar[j * nx + i] = 1; } });
+ const core = r => { for (let j = Math.floor((r[1] - z0) / res) - 1; j <= Math.ceil((r[3] - z0) / res); j++) for (let i = Math.floor((r[0] - x0) / res) - 1; i <= Math.ceil((r[2] - x0) / res); i++) if (i >= 0 && j >= 0 && i < nx && j < nz) bar[j * nx + i] = 2; };
+ S.lift.concat(S.stair, S.meter, S.other.map(o => o.slice(1))).forEach(core);
+ const q = []; for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) if (inP[j * nx + i] && !bar[j * nx + i] && (i === 0 || j === 0 || i === nx - 1 || j === nz - 1 || !inP[j * nx + i - 1] || !inP[j * nx + i + 1] || !inP[(j - 1) * nx + i] || !inP[(j + 1) * nx + i])) { out[j * nx + i] = 1; q.push(j * nx + i); }
+ while (q.length) { const c = q.pop(), i = c % nx, j = (c - i) / nx; for (const [a, b] of [[i + 1, j], [i - 1, j], [i, j + 1], [i, j - 1]]) { if (a < 0 || b < 0 || a >= nx || b >= nz) continue; const m = b * nx + a; if (out[m] || !inP[m] || bar[m]) continue; out[m] = 1; q.push(m); } }
+ const openOk = new Uint8Array(nx * nz), lobOk = new Uint8Array(nx * nz); for (let c = 0; c < nx * nz; c++) { openOk[c] = inP[c] && out[c] && !bar[c] ? 1 : 0; lobOk[c] = inP[c] && !out[c] && !bar[c] ? 1 : 0; }
+ // erode by one cell so zones keep off walls and glass
+ const erode = g => { const o = new Uint8Array(g.length); for (let j = 1; j < nz - 1; j++) for (let i = 1; i < nx - 1; i++) { const c = j * nx + i; o[c] = g[c] && g[c - 1] && g[c + 1] && g[c - nx] && g[c + nx] ? 1 : 0; } return o; };
+ const LIST = [['Café with juice bar', 'cafe'], ['Seating lounge', 'lounge'], ['Tot-lot', 'tot'], ['Yoga & aerobics deck', 'yoga'], ['Wi-Fi pod / study zone', 'study'], ['Senior citizens’ lounge', 'senior'], ['Calisthenics zone', 'cali'], ['Outdoor games', 'games']];
+ const zr = freeRects(erode(openOk), nx, nz, res, x0, z0, LIST.length, 4, 3.5, 9, 6.5);
+ const zones = zr.map((r, i) => ({ r, name: LIST[i][0], k: LIST[i][1] }));
+ const lob = freeRects(erode(lobOk), nx, nz, res, x0, z0, 1, 4, 4, 14, 10)[0];
+ if (lob) zones.push({ r: lob, name: 'Double-height entrance lounge', k: 'lobby' });
+ zones.forEach(z => k.lab(z.name, z.k === 'lobby' ? '' : 'approximate place', (z.r[0] + z.r[2]) / 2, (z.r[1] + z.r[3]) / 2));
+ const lc = S.lift.length ? [S.lift.reduce((s, r) => s + r[0] + r[2], 0) / S.lift.length / 2, S.lift.reduce((s, r) => s + r[1] + r[3], 0) / S.lift.length / 2] : [(x0 + nx * res / 2), (z0 + nz * res / 2)];
+ k.lab('Lifts', '', lc[0], lc[1]);
+ const v = { plate, balc: [], doors: [], dk: [], rooms: zones.map(z => ({ r: z.r, label: z.name, k: 'zone' })), lift: S.lift, stair: S.stair, meter: S.meter, void: [], winq: [], wk: [], free: [], tags: [], floors: [], outline: [] };
+ const st = lob ? [(lob.r ? 0 : 0) + (lob[0] + lob[2]) / 2, (lob[1] + lob[3]) / 2] : lc;
+ return { v, start: [st[0], st[1] + 2, 0], zones, furnish: furnishZones };
+}
+
+/* ---- terrace ---- */
+function terraceLevel(t, k) {
+ const typ = TW[t].typ, plate = typ.plate;
+ k.grp.add(flat(plate, M_STONE, .004));
+ for (let i = 0; i < plate.length; i++) { const a = plate[i], b = plate[(i + 1) % plate.length]; k.wallSeg(a, b, 1.2, .2); }
+ const lf = typ.lift, st = typ.stair, ext = rs => [Math.min(...rs.map(q => q[0])) - 1, Math.min(...rs.map(q => q[1])) - 1, Math.max(...rs.map(q => q[2])) + 1, Math.max(...rs.map(q => q[3])) + 1];
+ const heads = []; if (lf.length) heads.push(ext(lf)); st.forEach(r => heads.push(r));
+ heads.forEach((r, i) => k.solidQ(rectQ(r), i ? 3.2 : 4.5, k.coreAcc));
+ if (lf.length) k.lab('Lift machine room', '', (heads[0][0] + heads[0][2]) / 2, (heads[0][1] + heads[0][3]) / 2);
+ const res = .5, xs = plate.map(p => p[0]), zs = plate.map(p => p[1]), x0 = Math.min(...xs), z0 = Math.min(...zs), nx = Math.ceil((Math.max(...xs) - x0) / res), nz = Math.ceil((Math.max(...zs) - z0) / res);
+ const ok = new Uint8Array(nx * nz); for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) { const x = x0 + (i + .5) * res, z = z0 + (j + .5) * res; ok[j * nx + i] = pip(plate, x, z) && !heads.some(r => x > r[0] - 2.5 && x < r[2] + 2.5 && z > r[1] - 2.5 && z < r[3] + 2.5) ? 1 : 0; }
+ const er = new Uint8Array(nx * nz); for (let j = 2; j < nz - 2; j++) for (let i = 2; i < nx - 2; i++) { let a = 1; for (let dj = -2; dj <= 2 && a; dj++) for (let di = -2; di <= 2; di++) if (!ok[(j + dj) * nx + i + di]) { a = 0; break; } er[j * nx + i] = a; }
+ const LIST = [['Terrace party lawn', 'lawn'], ['Sky cinema / amphitheatre', 'cinema'], ['Sky yoga deck', 'yoga'], ['Sky fitness zone', 'cali'], ['Cabana corner', 'cabana'], ['Mini golf', 'golf'], ['Star-gazing deck', 'stars'], ['Landscaped garden', 'garden'], ['Outdoor seating', 'lounge']];
+ const zr = freeRects(er, nx, nz, res, x0, z0, LIST.length, 4, 3.5, 11, 8);
+ const zones = zr.map((r, i) => ({ r, name: LIST[i][0], k: LIST[i][1] }));
+ zones.forEach(z => k.lab(z.name, 'approximate place', (z.r[0] + z.r[2]) / 2, (z.r[1] + z.r[3]) / 2));
+ const s0 = st[0] || heads[0]; const start = s0 ? standStart(s0, plate) : [(x0 + nx * res / 2), (z0 + nz * res / 2)];
+ const v = { plate, balc: [], doors: [], dk: [], rooms: zones.map(z => ({ r: z.r, label: z.name, k: 'zone' })), lift: lf, stair: st, meter: [], void: [], winq: [], wk: [], free: [], tags: [], floors: [], outline: [] };
+ return { v, start: [start[0], start[1], 0], zones, furnish: furnishZones };
+}
+function standStart(r, plate) { const c = [(r[0] + r[2]) / 2, (r[1] + r[3]) / 2]; for (const [dx, dz] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) { const p = [dx ? (dx > 0 ? r[2] + 1.5 : r[0] - 1.5) : c[0], dz ? (dz > 0 ? r[3] + 1.5 : r[1] - 1.5) : c[1]]; if (pip(plate, p[0], p[1])) return p; } return c; }
+
+/* ---- amenity zones: simple, recognisable furnishing ---- */
+function furnishZones(zones) {
+ zones.forEach(({ r, k }) => {
+  const cx = (r[0] + r[2]) / 2, cz = (r[1] + r[3]) / 2, W = r[2] - r[0], D = r[3] - r[1], f = Fr(cx, cz, 0), pad = (m, y = .015) => mk(boxGeo(W - .2, .03, D - .2), m, cx, y, cz, 0, false);
+  if (k === 'lawn' || k === 'garden') { pad(mat('#5d8a3c', { roughness: .95 })); for (let i = 0; i < (k === 'garden' ? 6 : 3); i++) { const u = -W / 2 + .9 + (i % 3) * (W - 1.8) / 2, vv = (i < 3 ? -1 : 1) * (D / 2 - .9); boxAt(f, u, vv, .25, .9, .5, .9, mat('#8a7c6a')); model(i % 2 ? 'potted_plant_04' : 'potted_plant_02', f, u, vv, .5, { h: 1.1 }); } if (k === 'lawn') for (let i = -1; i <= 1; i++) mk(new T.SphereGeometry(.05, 8, 6), mat('#ffd9a0', { emissive: lin('#ffb85c'), emissiveIntensity: 1.2 }), cx + i * W / 3, 2.6, cz); }
+  else if (k === 'yoga') { pad(PM.deck || mat('#9c6b45')); for (let i = 0; i < 4; i++) boxAt(f, -W / 2 + 1.2 + i * Math.min(1.4, (W - 2) / 3), 0, .04, .6, .02, 1.8, [PM.velvetTeal, PM.velvetRust, PM.velvetIndigo, PM.velvetMustard][i]); }
+  else if (k === 'cali') { pad(mat('#3b3f44', { roughness: .9 })); for (let i = 0; i < 3; i++) { const u = -W / 2 + 1.2 + i * 1.6; [-.6, .6].forEach(d => boxAt(f, u, d, 1.1, .08, 2.2, .08, PM.steel)); boxAt(f, u, 0, 2.2, .06, .06, 1.3, PM.steel); } }
+  else if (k === 'tot') { pad(mat('#3e7fbf', { roughness: .95 })); rboxAt(f, -W / 4, 0, .5, 1.2, 1, 1.2, .1, PM.velvetMustard); rboxAt(f, W / 4, 0, .35, 1, .7, 1, .1, PM.velvetRust); mk(new T.SphereGeometry(.4, 16, 12), PM.velvetTeal, cx, .4, cz + D / 4); }
+  else if (k === 'cafe') { pad(PM.deck || mat('#9c6b45')); boxAt(f, 0, -D / 2 + .5, .55, Math.min(4, W - 1), 1.1, .7, PM.teak); boxAt(f, 0, -D / 2 + .5, 1.12, Math.min(4, W - 1) + .05, .04, .75, PM.granite); for (let i = 0; i < 3; i++) { const u = -W / 2 + 1.3 + i * (W - 2.6) / 2; mk(new T.CylinderGeometry(.4, .4, .04, 20), PM.ceramic, ...f.P(u, D / 4).slice(0, 1), .74, f.P(u, D / 4)[1]); mk(new T.CylinderGeometry(.04, .04, .72, 8), PM.black, f.P(u, D / 4)[0], .36, f.P(u, D / 4)[1]); model('dining_chair_02', Fr(...f.P(u, D / 4 - .6), 0), 0, 0, 0, { h: .95 }); } }
+  else if (k === 'study') { pad(mat('#6b6f74')); for (let i = 0; i < 3; i++) { const u = -W / 2 + 1 + i * 1.5; boxAt(f, u, -D / 2 + .6, 1.1, 1.3, 2.2, .06, PM.oak); boxAt(f, u, -D / 2 + .95, .74, 1.1, .04, .6, PM.teak); model('modern_arm_chair_01', Fr(...f.P(u, -D / 2 + 1.6), Math.PI), 0, 0, 0, { w: .7 }); } }
+  else if (k === 'cabana') { pad(PM.deck || mat('#9c6b45')); for (let i = 0; i < 2; i++) { const u = (i ? 1 : -1) * W / 4; [[-1, -1], [-1, 1], [1, -1], [1, 1]].forEach(([a, b]) => boxAt(f, u + a * .9, b * .9, 1.2, .08, 2.4, .08, PM.teak)); boxAt(f, u, 0, 2.45, 2, .08, 2, PM.linenSand); rboxAt(f, u, 0, .25, 1.6, .4, 1.6, .08, PM.linenSand); } }
+  else if (k === 'golf') { pad(mat('#3f8a3a', { roughness: .8 })); for (let i = 0; i < 3; i++) { mk(new T.CylinderGeometry(.06, .06, .02, 12), PM.black, cx - W / 3 + i * W / 3, .035, cz + (i % 2 ? .6 : -.6)); mk(new T.CylinderGeometry(.01, .01, 1, 6), PM.ceramic, cx - W / 3 + i * W / 3, .5, cz + (i % 2 ? .6 : -.6)); } }
+  else if (k === 'stars') { pad(PM.deck || mat('#9c6b45')); for (let i = 0; i < 3; i++) rboxAt(f, -W / 2 + 1.2 + i * 1.3, .4, .3, .8, .35, 1.9, .06, PM.linenSand); const [tx, tz] = f.P(W / 2 - 1, -D / 4); mk(new T.CylinderGeometry(.09, .09, 1.1, 12), PM.black, tx, 1.2, tz).rotation.z = .9; [0, 2.1, 4.2].forEach(a => { const m = mk(new T.CylinderGeometry(.015, .015, 1.3, 6), PM.steel, tx + Math.cos(a) * .25, .6, tz + Math.sin(a) * .25); m.rotation.x = .2; }); }
+  else if (k === 'cinema') { pad(PM.deck || mat('#9c6b45')); boxAt(f, 0, -D / 2 + .15, 1.9, Math.min(5, W - 1), 2.6, .06, mat('#f4f4f2', { emissive: lin('#cfd8ff'), emissiveIntensity: .25 })); for (let i = 0; i < 3; i++) boxAt(f, 0, D / 2 - .7 - i * .9, .2 + i * .2, W - 1, .4 + i * .4, .8, mat('#b8ad9c')); }
+  else if (k === 'lounge' || k === 'senior') { rug(cx, cz, Math.min(W - 1, 4), Math.min(D - 1, 3), 0, PM.rug1 || mat('#b9a58a')); sofa(Fr(cx, r[1] + .1, 0), 0, 0, Math.min(2.6, W - 1.5), PM.linenSand, PM.velvetTeal); model('modern_arm_chair_01', Fr(cx - 1.2, cz + D / 2 - 1, Math.PI), 0, 0, 0, { w: .8 }); model('modern_arm_chair_01', Fr(cx + 1.2, cz + D / 2 - 1, Math.PI), 0, 0, 0, { w: .8 }); model('coffee_table_round_01', Fr(cx, cz, 0), 0, 0, 0, { w: .9 }); }
+  else if (k === 'games') { pad(mat('#2f6f8f', { roughness: .8 })); boxAt(f, 0, 0, .76, 2.7, .05, 1.5, mat('#1f5c3d')); [-1, 1].forEach(s => boxAt(f, s * 1.1, 0, .38, .08, .76, 1.2, PM.black)); }
+  else if (k === 'lobby') { pad(M_MARBLE, .01); sofa(Fr(cx, r[1] + .2, 0), 0, 0, Math.min(3, W - 2), PM.velvetTeal, PM.velvetMustard); sofa(Fr(cx, r[3] - .2, Math.PI), 0, 0, Math.min(3, W - 2), PM.velvetTeal, PM.velvetMustard); model('coffee_table_round_01', Fr(cx, cz, 0), 0, 0, 0, { w: 1.1 }); model('potted_plant_02', Fr(r[0] + .7, r[1] + .7, 0), 0, 0, 0, { h: 1.6 }); model('potted_plant_02', Fr(r[2] - .7, r[3] - .7, 0), 0, 0, 0, { h: 1.6 }); mk(new T.CylinderGeometry(1.1, .2, .9, 24, 1, true), PM.brass, cx, 6.2, cz); }
+ });
 }
 
 /* ================= floor detail ================= */
@@ -333,7 +519,7 @@ function buildFloor(t, n) {
  Object.values(units).forEach(U => { const d = document.createElement('div'); d.className = 'lb u'; d.innerHTML = `${U.flat}<i>${U.size ? fmt(U.size) + ' sft' : ''}${U.beds ? ' · ' + U.beds + ' BHK' : ''}</i>`; LBL.appendChild(d); labels.push({ d, p: [(U.box[0] + U.box[2]) / 2, 1.2, (U.box[1] + U.box[3]) / 2], kind: 'unit', u: U.id }); });
  v.rooms.forEach(r => { if (!r.u) return; const c = labelPoint(r); const d = document.createElement('div'); d.className = 'lb'; d.innerHTML = `${r.label}${r.d ? `<i>${r.d[0].toFixed(2)} × ${r.d[1].toFixed(2)} m</i>` : ''}`; LBL.appendChild(d); labels.push({ d, p: [c[0], .3, c[1]], kind: 'room', u: r.u }); });
  v.free.forEach(f => { if (!/REFUGE|AMENIT|LOBBY|SERVICE/.test(f.t)) return; const d = document.createElement('div'); d.className = 'lb'; d.textContent = f.t.charAt(0) + f.t.slice(1).toLowerCase(); LBL.appendChild(d); labels.push({ d, p: [f.x, .3, f.y], kind: 'free' }); });
- FLOOR = { grp, v, t, n, coll, units, labels, floorMeshes, clipY, furn, wins, leaves, BG, furnU, segs };
+ FLOOR = { grp, v, t, n, coll, units, labels, floorMeshes, clipY, furn, wins, leaves, BG, furnU, segs, solids: v.lift.concat(v.stair, v.meter, v.void).map(rectQ) };
  return FLOOR;
 }
 function labelPoint(r) { if (r._lp) return r._lp; const b = r.r; let x = (b[0] + b[2]) / 2, y = (b[1] + b[3]) / 2; if (r.p) { const ir = innerRect(r); x = (ir[0] + ir[2]) / 2; y = (ir[1] + ir[3]) / 2; } return (r._lp = [x, y]); }
@@ -466,7 +652,7 @@ const solid = (c, o = {}) => new T.MeshStandardMaterial(Object.assign({ color: l
 function makeMats() {
  // floors everywhere get real marble, tiles and deck
  const fl = (m, d, n, tile) => { const t = ASSET.tex[d]; if (!t) return; m.map = t.clone(); m.map.needsUpdate = true; m.map.repeat.set(1 / tile, 1 / tile); if (ASSET.tex[n]) { m.normalMap = ASSET.tex[n].clone(); m.normalMap.needsUpdate = true; m.normalMap.repeat.set(1 / tile, 1 / tile); m.normalScale = new T.Vector2(.5, .5); } m.roughness = d.startsWith('marble') ? .22 : .7; m.needsUpdate = true; };
- fl(M_MARBLE, 'marble_floor_d', 'marble_floor_n', 2.4); M_MARBLE.roughness = .1; M_MARBLE.envMapIntensity = 1.1;  // imported white marble, as the brochure specifies for living, bedrooms and kitchen fl(M_TILE, 'interior_tiles_d', 'interior_tiles_n', 1.2); fl(M_DECK, 'wood_floor_deck_d', 'wood_floor_deck_n', 1.6);
+ fl(M_MARBLE, 'marble_floor_d', 'marble_floor_n', 2.4); M_MARBLE.roughness = .1; M_MARBLE.envMapIntensity = 1.1; fl(M_TILE, 'interior_tiles_d', 'interior_tiles_n', 1.2); fl(M_DECK, 'wood_floor_deck_d', 'wood_floor_deck_n', 1.6);  // imported white marble, as the brochure specifies for living, bedrooms and kitchen
  Object.assign(PM, {
   teak: tm('teak_veneer_d', 'teak_veneer_n', 1.2, { roughness: .5 }),
   walnut: tm('walnut_veneer_d', 'walnut_veneer_n', 1.0, { roughness: .45 }),
@@ -771,7 +957,7 @@ function heroBalcony(g) {
  } else { model('potted_plant_02', f, L / 2, Dd / 2, 0, { h: Math.min(.8, Dd * .7) }); if (L > 2) model('potted_plant_04', f, L - .35, Dd / 2, 0, { h: .3 }); }
 }
 function buildHero() {
- if (!FLOOR) return;
+ if (!FLOOR || FLOOR.special) return;
  if (FLOOR.hero) { FLOOR.grp.remove(FLOOR.hero); FLOOR.hero = null; lights.length = 0; }
  Object.values(FLOOR.furnU || {}).forEach(m => m.visible = true);
  const U = FLOOR.units[sel.u]; if (!U) return;
@@ -826,7 +1012,9 @@ function ensureAccess(U, G) {
  if (miss) console.warn('access', U.id, miss, 'areas still closed off');
 }
 function applyCaps() { const inside = mode === 'walk' || mode === 'tour'; ((FLOOR && FLOOR.hero && FLOOR.hero.userData.caps) || []).forEach(c => c.visible = !inside); }
-function applyLights() { const inside = mode === 'walk' || mode === 'tour'; lights.forEach(l => l.visible = inside); }
+function applyLights() { const inside = mode === 'walk' || mode === 'tour'; lights.forEach(l => l.visible = inside);
+ // underground there is no daylight: tube lights and a dim fill only
+ const under = inside && sel.n < 0; sun.visible = !under; hemi.intensity = under ? .32 : .55; amb.intensity = under ? .3 : .16; if (ASSET.env) scene.environment = under ? null : ASSET.env; }
 
 /* ================= lights / sky / sun ================= */
 const skyU = { top: { value: new T.Color() }, bot: { value: new T.Color() } };
@@ -855,7 +1043,7 @@ function setSun() {
  placeSun();
 }
 function placeSun() {
- const inside = mode !== 'site'; const tgt = inside && FLOOR ? new T.Vector3(TW[sel.t].c[0], lvl(sel.n), TW[sel.t].c[1]) : new T.Vector3(SITE_C[0], 0, SITE_C[2]);
+ const inside = mode !== 'site'; const tgt = inside && FLOOR ? new T.Vector3(TW[sel.t].c[0], levelY(sel.n), TW[sel.t].c[1]) : new T.Vector3(SITE_C[0], 0, SITE_C[2]);
  const R = inside ? 45 : 180; Object.assign(sun.shadow.camera, { left: -R, right: R, top: R, bottom: -R, near: 1, far: 2600 }); sun.shadow.camera.updateProjectionMatrix();
  sun.target.position.copy(tgt); sun.position.copy(tgt).addScaledVector(sunDir, 1200);
 }
@@ -882,7 +1070,7 @@ function placeLabels() {
   const rc = new T.Raycaster(); landmarks.forEach(l => { const tgt = new T.Vector3(...l.p), dist = here.distanceTo(tgt), dir = tgt.clone().sub(here).normalize(); ray.set(here, dir);
    l.occ = own.some(bx => !bx.containsPoint(here) && ray.intersectBox(bx, hit) && here.distanceTo(hit) < dist - 8);
    // the slab above (ceiling) and below (floor) of this storey cover the whole floor plate and its balconies
-   if (!l.occ && inside && FLOOR) { const y0 = FLOOR.grp.position.y, yy = dir.y > 0 ? y0 + CH : y0; if (Math.abs(dir.y) > 1e-4) { const t = (yy - here.y) / dir.y; if (t > 0 && t < dist) { const px = here.x + dir.x * t - FLOOR.grp.position.x, pz = here.z + dir.z * t - FLOOR.grp.position.z; if (pip(FLOOR.v.plate, px, pz) || FLOOR.v.balc.some(b => inRect(b, px, pz, .05))) l.occ = true; } } }
+   if (!l.occ && inside && FLOOR) { const y0 = FLOOR.grp.position.y, yy = dir.y > 0 ? y0 + (FLOOR.ch || CH) : y0; if (Math.abs(dir.y) > 1e-4) { const t = (yy - here.y) / dir.y; if (t > 0 && t < dist) { const px = here.x + dir.x * t - FLOOR.grp.position.x, pz = here.z + dir.z * t - FLOOR.grp.position.z; if (pip(FLOOR.v.plate, px, pz) || FLOOR.v.balc.some(b => inRect(b, px, pz, .05))) l.occ = true; } } }
    if (!l.occ && inside && FLOOR) { rc.set(here, dir); rc.far = Math.min(dist - 1, 120); l.occ = rc.intersectObjects(FLOOR.occ.filter(o => { for (let p = o; p; p = p.parent) if (!p.visible) return false; return true; }), false).length > 0; } }); }
  landmarks.forEach(l => { if (l.occ && lmOn) l.d.style.display = 'none'; });
  // keep the nearest landmark when two would overlap
@@ -898,24 +1086,28 @@ const walker = { x: 0, z: 0, yaw: 0, pitch: -.05 };
 function refreshTowers() { for (const t of 'ABC') towerMassing(t, (mode !== 'site' && t === sel.t) ? { n: sel.n } : null); applyVisibility(); }
 function applyVisibility() {
  const inside = mode === 'walk' || mode === 'tour';
- if (FLOOR) { FLOOR.grp.visible = mode !== 'site'; CLIP.constant = inside ? 1e4 : lvl(sel.n) + 1.35; FLOOR.furn.visible = $('#furn').checked; if (FLOOR.hero) FLOOR.hero.visible = $('#furn').checked; if (FLOOR.leaves) FLOOR.leaves.visible = inside; applyCaps(); }
+ if (FLOOR) { FLOOR.grp.visible = mode !== 'site'; CLIP.constant = inside ? 1e4 : levelY(sel.n) + 1.35; FLOOR.furn.visible = $('#furn').checked; if (FLOOR.hero) FLOOR.hero.visible = $('#furn').checked; if (FLOOR.leaves) FLOOR.leaves.visible = inside; applyCaps(); }
  applyLights();
  const g = towerGrp[sel.t]; if (g && g.userData.above) { g.userData.above.visible = inside; const { sl, gl, balcAboveFrom, total } = g.userData; sl.count = gl.count = inside ? total : balcAboveFrom; }
  city.visible = $('#city').checked;
+ const under = mode === 'floor' && sel.n < 0; world.visible = !under; if (under) city.visible = false; for (const tt of 'ABC') if (towerGrp[tt]) towerGrp[tt].visible = !under;
 }
 function selectFloor(t, n, keepUnit) {
- sel.t = t; sel.n = n; const v = variantFor(t, n);
- if (!keepUnit || !v.rooms.some(r => r.u === sel.u)) sel.u = (v.rooms.find(r => r.u) || {}).u || null;
- buildFloor(t, n); refreshTowers(); renderUI();
+ sel.t = t; sel.n = n;
+ if (isSpecial(n)) { if (!BASE || !STILTD) { levelData.then(() => { if (sel.t === t && sel.n === n) selectFloor(t, n, keepUnit); }); return; } sel.u = null; buildSpecial(t, n); }
+ else { const v = variantFor(t, n); if (!keepUnit || !v.rooms.some(r => r.u === sel.u)) sel.u = (v.rooms.find(r => r.u) || {}).u || null; buildFloor(t, n); }
+ refreshTowers(); renderUI();
  if (mode === 'floor') focusUnit(); if (mode === 'walk') startWalk(); if (mode === 'tour') startTour();
  placeSun();
 }
 function focusUnit() {
- const c = TW[sel.t].c, y = lvl(sel.n);
+ const c = TW[sel.t].c, y = levelY(sel.n);
+ if (FLOOR && FLOOR.special) { const b = sel.n < 0 ? [SITE_C[0], SITE_C[2]] : c; Object.assign(orbT, { tx: b[0], ty: y, tz: b[1], r: sel.n < 0 ? 190 : 75, ph: .78 }); return; }
  if (sel.u && FLOOR.units[sel.u]) { const b = FLOOR.units[sel.u].box, O = TW[sel.t].O; Object.assign(orbT, { tx: O[0] + (b[0] + b[2]) / 2, ty: y, tz: O[1] + (b[1] + b[3]) / 2, r: 30, ph: Math.min(orbT.ph, .85) }); }
  else Object.assign(orbT, { tx: c[0], ty: y, tz: c[1], r: 70, ph: .8 });
 }
 function setMode(m) {
+ if (m === 'tour' && FLOOR && FLOOR.special) m = 'walk';  // no guided tour on the shared levels: walk them
  const prev = mode; mode = m;
  document.querySelectorAll('#modes button').forEach(b => b.setAttribute('aria-pressed', b.dataset.m === m));
  const inside = m === 'walk' || m === 'tour';
@@ -924,7 +1116,7 @@ function setMode(m) {
  if (m === 'site') Object.assign(orbT, { tx: SITE_C[0], ty: 40, tz: SITE_C[2], r: 470, ph: .98 });
  if (m === 'floor') { focusUnit(); if (prev !== 'floor') orbT.ph = .82; }
  if (m === 'walk') startWalk(); if (m === 'tour') startTour();
- cam.fov = inside ? 70 : 45; cam.near = inside ? .1 : m === 'floor' ? .5 : 2; cam.updateProjectionMatrix();  // a larger near plane in the aerial views keeps distant roads and parks from flickering setSun(); lastRoom = undefined;
+ cam.fov = inside ? 70 : 45; cam.near = inside ? .1 : m === 'floor' ? .5 : 2; cam.updateProjectionMatrix(); setSun(); lastRoom = undefined;  // a larger near plane in the aerial views keeps distant roads and parks from flickering
  document.querySelectorAll('#acts [data-m]').forEach(b => b.setAttribute('aria-pressed', b.dataset.m === m)); syncHash();
  landmarks.forEach(l => l.occ = true); occTick = 11;  // hidden until the next visibility check, so no label flashes through a wall
 }
@@ -933,13 +1125,13 @@ document.querySelectorAll('#modes button').forEach(b => b.addEventListener('clic
 /* ================= UI ================= */
 $('#towers').innerHTML = 'ABC'.split('').map(t => `<button data-t="${t}" aria-pressed="false">${TW[t].name}</button>`).join('');
 $('#towers').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; selectFloor(b.dataset.t, sel.n, false); if (mode === 'site') setMode('floor'); });
-const setN = n => { n = Math.max(1, Math.min(56, n)); if (n !== sel.n) selectFloor(sel.t, n, true); };
+const setN = n => { n = Math.max(-4, Math.min(TERR, n)); if (n !== sel.n) selectFloor(sel.t, n, true); };
 $('#fdn').addEventListener('click', () => setN(sel.n - 1)); $('#fup').addEventListener('click', () => setN(sel.n + 1));
-let rT; $('#frange').addEventListener('input', e => { $('#fval').textContent = e.target.value; clearTimeout(rT); rT = setTimeout(() => setN(+e.target.value), 150); });
+let rT; $('#frange').addEventListener('input', e => { $('#fval').textContent = lname(+e.target.value); clearTimeout(rT); rT = setTimeout(() => setN(+e.target.value), 150); });
 $('#units').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; sel.u = b.dataset.u; renderUI(); if (mode === 'site') setMode('floor'); else if (mode === 'floor') focusUnit(); else if (mode === 'walk') startWalk(); else startTour(); if (innerWidth <= 860) togglePanel(false); });
 $('#rooms').addEventListener('click', e => { const b = e.target.closest('button'); if (!b || !FLOOR) return; const r = FLOOR.v.rooms[+b.dataset.i]; const c = labelPoint(r); if (mode !== 'walk') setMode('walk'); placeWalker(c[0], c[1], r); if (innerWidth <= 860) togglePanel(false); });
 let lastHash = '', linkReady = false;
-function syncHash() { if (!linkReady) return; const u = FLOOR && FLOOR.units[sel.u]; if (!u) return; const h = `#${sel.t}-${u.flat}${mode === 'walk' || mode === 'tour' ? '/' + mode : ''}`; if (h !== location.hash) { lastHash = h; try { history.replaceState(null, '', h); } catch (e) { } } }
+function syncHash() { if (!linkReady) return; const u = FLOOR && FLOOR.units[sel.u]; if (!u && !(FLOOR && FLOOR.special)) return; const h = `#${sel.t}-${u ? u.flat : lname(sel.n)}${mode === 'walk' || mode === 'tour' ? '/' + mode : ''}`; if (h !== location.hash) { lastHash = h; try { history.replaceState(null, '', h); } catch (e) { } } }
 // select a flat from what someone typed; returns false (with a note under the box) when the approved plan has no such flat
 function goFlat(q, quiet) {
  const p = parseFlat(q); const err = t => { if (!quiet) $('#ferr').textContent = t; return false; };
@@ -956,7 +1148,8 @@ $('#find').addEventListener('submit', e => { e.preventDefault(); if (goFlat($('#
 $('#acts').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; if (b.id === 'share') { syncHash(); const url = location.href; const done = () => { b.textContent = 'Link copied'; setTimeout(() => b.textContent = 'Copy link', 1800); }; try { navigator.clipboard.writeText(url).then(done, () => { $('#ferr').textContent = url; }); } catch (er) { $('#ferr').textContent = url; } return; } $('#ferr').textContent = ''; setMode(b.dataset.m); });
 function renderUI() {
  document.querySelectorAll('#towers button').forEach(b => b.setAttribute('aria-pressed', b.dataset.t === sel.t));
- $('#fval').textContent = sel.n; $('#frange').value = sel.n;
+ $('#fval').textContent = lname(sel.n); $('#frange').value = sel.n;
+ if (FLOOR && FLOOR.special) { renderSpecialUI(); return; }
  const v = variantFor(sel.t, sel.n); const typ = TW[sel.t].typ; const allU = [...new Set(typ.rooms.map(r => r.u).filter(Boolean))].sort();
  const here = new Set(v.rooms.map(r => r.u)); const missing = allU.filter(u => !here.has(u));
  $('#fnote').textContent = v === typ ? '' : `Special floor on the approved plan${missing.length ? `: flat ${missing.map(u => sel.n * 100 + META[u][2]).join(', ')} is replaced by refuge or service space` : ''}.`;
@@ -966,7 +1159,7 @@ function renderUI() {
  $('#sel').textContent = u ? `${TW[sel.t].name} · Floor ${sel.n} · Flat ${u.flat}` : `${TW[sel.t].name} · Floor ${sel.n}`; if (u) $('#fq').placeholder = `Find a flat · now showing ${sel.t}-${u.flat}`; syncHash();
  if (u) {
   const carpet = Math.round(u.area * 10.764);
-  $('#stats').innerHTML = `<div><b>${u.size ? fmt(u.size) : '–'}</b><span>sft saleable</span></div><div><b>${fmt(carpet)}</b><span>sft rooms (approved)</span></div><div><b>${u.beds} BHK</b><span>+ staff room</span></div><div><b>+${lvl(sel.n).toFixed(1)} m</b><span>floor level</span></div>`;
+  $('#stats').innerHTML = `<div><b>${u.size ? fmt(u.size) : '–'}</b><span>sft saleable</span></div><div><b>${fmt(carpet)}</b><span>sft rooms (approved)</span></div><div><b>${u.beds} BHK</b><span>+ staff room</span></div><div><b>+${levelY(sel.n).toFixed(1)} m</b><span>floor level</span></div>`;
   $('#roomsh').textContent = `Rooms in ${u.flat}`;
   const order = ['livdin', 'living', 'drawing', 'dining', 'kitchen', 'wetk', 'utility', 'wash', 'bed', 'dress', 'toilet', 'servant', 'pooja', 'store', 'other'];
   const rs = FLOOR.v.rooms.map((r, i) => [r, i]).filter(([r]) => r.u === sel.u).sort((a, b) => order.indexOf(a[0].k) - order.indexOf(b[0].k) || roomArea(b[0]) - roomArea(a[0]));
@@ -976,12 +1169,22 @@ function renderUI() {
  } else { $('#stats').innerHTML = ''; $('#rooms').innerHTML = ''; $('#check').textContent = ''; }
  if (FLOOR && FLOOR.heroFor !== sel.u) { FLOOR.heroFor = sel.u; buildHero(); }
 }
+function renderSpecialUI() {
+ const n = sel.n, nm = TW[sel.t].name;
+ $('#fnote').textContent = n < 0 ? 'Common basement shared by all three towers: parking bays, driveways and ramps from the approved plan.' : n === 0 ? 'Stilt (ground) floor: entrance lobby and lifts from the approved plan; amenities from the brochure, placed approximately.' : 'Open terrace: lift machine room and stair heads from the approved plan; sky amenities from the brochure, placed approximately.';
+ $('#units').innerHTML = ''; $('#sel').textContent = `${nm} · ${lfull(n)}`; $('#fq').placeholder = 'Find a flat · e.g. B-2904';
+ const bays = n < 0 && BASE ? (BASE['B' + (-n)].bay || []).length : 0;
+ $('#stats').innerHTML = (n < 0 ? `<div><b>${bays}</b><span>parking bays (approx.)</span></div>` : `<div><b>${FLOOR.v.rooms.length}</b><span>amenity zones</span></div>`) + `<div><b>${levelY(n) >= 0 ? '+' : ''}${levelY(n).toFixed(1)} m</b><span>level</span></div>`;
+ $('#roomsh').textContent = n < 0 ? 'On this level' : 'Amenities here'; $('#rooms').innerHTML = FLOOR.v.rooms.map((r, i) => `<button data-i="${i}">${r.label}<span></span></button>`).join(''); $('#check').textContent = '';
+ syncHash();
+}
 function togglePanel(open) { $('#panel').classList.toggle('open', open); $('#menu').setAttribute('aria-expanded', open); $('#menu').textContent = open ? 'Close' : 'Towers & flats'; }
 $('#menu').addEventListener('click', () => togglePanel(!$('#panel').classList.contains('open')));
 $('#furn').addEventListener('change', applyVisibility); $('#city').addEventListener('change', applyVisibility);
 
 /* ================= walking ================= */
 function startWalk() {
+ if (FLOOR && FLOOR.special) { placeWalker(FLOOR.start[0], FLOOR.start[1]); walker.yaw = openYaw(walker.x, walker.z); walker.pitch = -.05; lastRoom = undefined; return; }
  const U = FLOOR && FLOOR.units[sel.u]; if (!U) return;
  if (U.door) { walker.x = U.door.outside[0]; walker.z = U.door.outside[1]; walker.yaw = Math.atan2(-(U.door.inside[0] - U.door.outside[0]), -(U.door.inside[1] - U.door.outside[1])); }
  else { walker.x = (U.box[0] + U.box[2]) / 2; walker.z = (U.box[1] + U.box[3]) / 2; }
@@ -989,6 +1192,7 @@ function startWalk() {
 }
 function blocked(x, z) {
  const v = FLOOR.v; if (!pip(v.plate, x, z) && !v.balc.some(b => inRect(b, x, z, .35))) return true;
+ if (FLOOR.solids && FLOOR.solids.some(q => pip(q, x, z))) return true;
  const r = .22;  // half shoulder width: passes a 75 cm toilet door, as a person does
  for (const [x1, y1, x2, y2, th] of FLOOR.coll) { const dx = x2 - x1, dy = y2 - y1, L2 = dx * dx + dy * dy || 1e-9; let t = ((x - x1) * dx + (z - y1) * dy) / L2; t = Math.max(0, Math.min(1, t)); const px = x1 + dx * t - x, pz = y1 + dy * t - z; if (px * px + pz * pz < (r + th / 2) ** 2) return true; }
  return false;
@@ -998,6 +1202,8 @@ function furnPen(x, z, r = .22) { let p = 0; for (const q of (FLOOR && FLOOR.fur
 const free = (x, z) => !blocked(x, z) && furnPen(x, z) === 0;
 // nearest spot where a person can actually stand (clear of walls and furniture), preferring the same room
 function standSpot(x, z, room) { if (free(x, z)) return [x, z]; for (let rad = .1; rad <= 3; rad += .1) { const n = Math.max(8, Math.round(rad * 40)); let alt = null; for (let k = 0; k < n; k++) { const a = k / n * Math.PI * 2, px = x + Math.cos(a) * rad, pz = z + Math.sin(a) * rad; if (!free(px, pz)) continue; if (!room || inRoom(room, px, pz)) return [px, pz]; alt = alt || [px, pz]; } if (alt && rad > 1.5) return alt; } return [x, z]; }
+// the direction with the longest clear view from x,z (so you don't start facing a wall)
+function openYaw(x, z) { let best = 0, by = 0; for (let k = 0; k < 24; k++) { const y = k / 24 * Math.PI * 2, fx = -Math.sin(y), fz = -Math.cos(y); let d = 0; while (d < 40 && free(x + fx * (d + .3), z + fz * (d + .3))) d += .3; if (d > best) { best = d; by = y; } } return by; }
 function placeWalker(x, z, room) { const p = standSpot(x, z, room); walker.x = p[0]; walker.z = p[1]; }
 // shortest walkable route between two points on a 15 cm grid (walls and furniture are obstacles), smoothed to straight runs
 function route(a, b) {
@@ -1113,6 +1319,7 @@ function drawMM() {
  mg.clearRect(0, 0, Wc, Hc);
  mg.fillStyle = '#2a2f37'; mg.beginPath(); v.plate.forEach((p, i) => { const q = P(p[0], p[1]); i ? mg.lineTo(...q) : mg.moveTo(...q); }); mg.fill();
  v.balc.forEach(b => { const a = P(b[0], b[1]); mg.fillStyle = '#6b4c33'; mg.fillRect(a[0], a[1], (b[2] - b[0]) * s, (b[3] - b[1]) * s); });
+ (v.mm || []).forEach(([q, c]) => { mg.fillStyle = c; mg.beginPath(); q.forEach((p, i) => { const r = P(p[0], p[1]); i ? mg.lineTo(...r) : mg.moveTo(...r); }); mg.closePath(); mg.fill(); });
  v.rooms.forEach(r => { mg.fillStyle = r.u === sel.u ? 'rgba(214,167,86,.55)' : (r.u ? '#3d434c' : '#333'); mg.strokeStyle = 'rgba(236,232,225,.55)'; mg.lineWidth = .8; mg.beginPath(); (r.p || rectPts(r.r)).forEach((p, i) => { const q = P(p[0], p[1]); i ? mg.lineTo(...q) : mg.moveTo(...q); }); mg.closePath(); mg.fill(); mg.stroke(); });
  mg.strokeStyle = '#ece8e1'; mg.lineWidth = 1.4; mg.beginPath(); v.plate.forEach((p, i) => { const q = P(p[0], p[1]); i ? mg.lineTo(...q) : mg.moveTo(...q); }); mg.closePath(); mg.stroke();
  const inside = mode === 'walk' || mode === 'tour'; let px, pz, yaw;
@@ -1131,9 +1338,9 @@ function frame() {
  const dt = Math.min(clock.getDelta(), .05);
  if (mode === 'walk' || mode === 'tour') {
   if (mode === 'walk') walkStep(dt); else tourStep(dt);
-  const O = TW[sel.t].O; cam.position.set(O[0] + walker.x, lvl(sel.n) + EYE, O[1] + walker.z); fill.position.copy(cam.position); fill.position.y += .6; fill.intensity = .9; cam.rotation.set(walker.pitch, walker.yaw, 0); cam.up.set(0, 1, 0);
+  const O = TW[sel.t].O; cam.position.set(O[0] + walker.x, levelY(sel.n) + EYE, O[1] + walker.z); fill.position.copy(cam.position); fill.position.y += .6; fill.intensity = .9; cam.rotation.set(walker.pitch, walker.yaw, 0); cam.up.set(0, 1, 0);
   const r = FLOOR.v.rooms.find(q => inRoom(q, walker.x, walker.z)); const key = r || (FLOOR.v.balc.some(b => inRect(b, walker.x, walker.z)) ? 'balc' : null);
-  if (key !== lastRoom) { lastRoom = key; $('#hud').innerHTML = r ? `${r.label || r.n}<span>${r.d ? `${r.d[0].toFixed(2)} × ${r.d[1].toFixed(2)} m` : ''}</span>` : key === 'balc' ? 'Balcony' : 'Lobby'; }
+  if (key !== lastRoom) { lastRoom = key; $('#hud').innerHTML = r ? `${r.label || r.n}<span>${r.d ? `${r.d[0].toFixed(2)} × ${r.d[1].toFixed(2)} m` : ''}</span>` : key === 'balc' ? 'Balcony' : FLOOR && FLOOR.special ? lfull(sel.n) : 'Lobby'; }
  } else {
   fill.intensity = 0; const k = 1 - Math.pow(.002, dt); for (const p in orb) orb[p] += (orbT[p] - orb[p]) * k;
   const sp = Math.sin(orb.ph); cam.position.set(orb.tx + orb.r * sp * Math.sin(orb.th), orb.ty + orb.r * Math.cos(orb.ph), orb.tz + orb.r * sp * Math.cos(orb.th));
@@ -1145,7 +1352,7 @@ function frame() {
 }
 resize(); setSun(); selectFloor(sel.t, sel.n, true);
 // shareable links: #B-2904 opens that flat, #B-2904/walk or /tour opens it inside
-function openLink() { const [f, m] = decodeURIComponent((location.hash || '').slice(1)).split('/'); const ok = f && goFlat(f, true); const mm = ['site', 'floor', 'walk', 'tour'].includes(m) ? m : ok ? 'floor' : null; if (mm && mm !== mode) setMode(mm); }
+function openLink() { const [f, m] = decodeURIComponent((location.hash || '').slice(1)).split('/'); const lv = /^([ABC])-(B[1-4]|G|T)$/i.exec(f || ''); if (lv) { const c = lv[2].toUpperCase(); selectFloor(lv[1].toUpperCase(), c === 'G' ? 0 : c === 'T' ? TERR : -(+c[1]), false); } const ok = lv ? true : f && goFlat(f, true); const mm = ['site', 'floor', 'walk', 'tour'].includes(m) ? m : ok ? 'floor' : null; if (mm && mm !== mode) setMode(mm); }
 openLink(); linkReady = true; syncHash(); addEventListener('hashchange', () => { if (location.hash !== lastHash) openLink(); });
 $('#load').remove(); requestAnimationFrame(frame);
 setTimeout(loadSurroundings, 50);
